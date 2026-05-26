@@ -1,0 +1,260 @@
+                    
+                    
+┌──────────────────┐
+│ 24 Code Findings │
+└──────────────────┘
+                                     
+  [36m[22m[24m  docker-compose.yml[0m
+    ❯❱ yaml.docker-compose.security.no-new-privileges.no-new-privileges
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Service 'postgres' allows for privilege escalation via setuid or setgid binaries. Add 'no-new-
+          privileges:true' in 'security_opt' to prevent this.                                           
+          Details: https://sg.run/0n8q                                                                  
+                                                                                                        
+            4┆ postgres:
+   
+    ❯❱ yaml.docker-compose.security.writable-filesystem-service.writable-filesystem-service
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Service 'postgres' is running with a writable root filesystem. This may allow malicious applications
+          to download and run additional payloads, or modify container files. If an application inside a      
+          container has to save something temporarily consider using a tmpfs. Add 'read_only: true' to this   
+          service to prevent this.                                                                            
+          Details: https://sg.run/e4JE                                                                        
+                                                                                                              
+            4┆ postgres:
+   
+    ❯❱ yaml.docker-compose.security.no-new-privileges.no-new-privileges
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Service 'redis' allows for privilege escalation via setuid or setgid binaries. Add 'no-new-
+          privileges:true' in 'security_opt' to prevent this.                                        
+          Details: https://sg.run/0n8q                                                               
+                                                                                                     
+           17┆ redis:
+   
+    ❯❱ yaml.docker-compose.security.writable-filesystem-service.writable-filesystem-service
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Service 'redis' is running with a writable root filesystem. This may allow malicious applications to
+          download and run additional payloads, or modify container files. If an application inside a         
+          container has to save something temporarily consider using a tmpfs. Add 'read_only: true' to this   
+          service to prevent this.                                                                            
+          Details: https://sg.run/e4JE                                                                        
+                                                                                                              
+           17┆ redis:
+                                           
+  [36m[22m[24m  scripts/legacy_deploy.sh[0m
+   ❯❯❱ generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Stripe API Key detected     
+          Details: https://sg.run/dKd5
+                                      
+           21┆ export PARTNER_API_KEY="sk_live_51HxFakeKeyForTrainingPurposesOnly9876543210"
+                                              
+  [36m[22m[24m  services/kyc-api/Dockerfile[0m
+   ❯❯❱ dockerfile.security.missing-user.missing-user
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          By not specifying a USER, a program in the container may run as 'root'. This is a security hazard.
+          If an attacker can control a process running as root, they may have control over the container.   
+          Ensure that the last USER in a Dockerfile is a USER other than 'root'.                            
+          Details: https://sg.run/Gbvn                                                                      
+                                                                                                            
+           ▶▶┆ Autofix ▶ USER non-root CMD ["python", "-m", "app.main"]
+           12┆ CMD ["python", "-m", "app.main"]
+                                               
+  [36m[22m[24m  services/kyc-api/app/auth.py[0m
+   ❯❯❱ python.jwt.security.jwt-none-alg.jwt-python-none-alg
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected use of the 'none' algorithm in a JWT token. The 'none' algorithm assumes the integrity of
+          the token has already been verified. This would allow a malicious actor to forge a JWT token that 
+          will automatically be verified. Do not explicitly use the 'none' algorithm. Instead, use an       
+          algorithm such as 'HS256'.                                                                        
+          Details: https://sg.run/Yvp4                                                                      
+                                                                                                            
+           12┆ return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"],
+               options={"verify_signature": False})                              
+   
+   ❯❯❱ python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token
+          which means the token could be tampered with by malicious actors. Ensure that the JWT token is  
+          verified.                                                                                       
+          Details: https://sg.run/6nyB                                                                    
+                                                                                                          
+           ▶▶┆ Autofix ▶ True
+           12┆ return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"],
+               options={"verify_signature": False})                              
+                                               
+  [36m[22m[24m  services/kyc-api/app/main.py[0m
+    ❯❱ python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Running flask app with host 0.0.0.0 could expose the server publicly.
+          Details: https://sg.run/eLby                                         
+                                                                               
+           25┆ app.run(host="0.0.0.0", port=8002, debug=True)
+   
+    ❯❱ python.flask.security.audit.debug-enabled.debug-enabled
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will   
+          leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug'
+          using system environment variables.                                                                 
+          Details: https://sg.run/dKrd                                                                        
+                                                                                                              
+           25┆ app.run(host="0.0.0.0", port=8002, debug=True)
+                                                        
+  [36m[22m[24m  services/kyc-api/app/routes/verify.py[0m
+    ❯❱ python.django.security.injection.sql.sql-injection-using-db-cursor-execute.sql-injection-db-cursor-execute
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          User-controlled data from a request is passed to 'execute()'. This could lead to a SQL injection and
+          therefore protected information could be leaked. Instead, use django's QuerySets, which are built   
+          with query parameterization and therefore not vulnerable to sql injection. For example, you could   
+          use `Entry.objects.filter(date=2006)`.                                                              
+          Details: https://sg.run/qx7y                                                                        
+                                                                                                              
+           44┆ bvn = request.args.get("bvn", "")
+           45┆ nin = request.args.get("nin", "")
+           46┆
+           47┆ conn = get_connection()
+           48┆ cur = conn.cursor()
+           49┆ try:
+           50┆     if bvn:
+           51┆         query = f"SELECT * FROM kyc_records WHERE bvn = '{bvn}'"
+           52┆     elif nin:
+           53┆         query = f"SELECT * FROM kyc_records WHERE nin = '{nin}'"
+             [hid 9 additional lines, adjust with --max-lines-per-finding] 
+           45┆ nin = request.args.get("nin", "")
+           46┆
+           47┆ conn = get_connection()
+           48┆ cur = conn.cursor()
+           49┆ try:
+           50┆     if bvn:
+           51┆         query = f"SELECT * FROM kyc_records WHERE bvn = '{bvn}'"
+           52┆     elif nin:
+           53┆         query = f"SELECT * FROM kyc_records WHERE nin = '{nin}'"
+           54┆     else:
+             [hid 8 additional lines, adjust with --max-lines-per-finding] 
+   
+   ❯❯❱ python.django.security.injection.tainted-sql-string.tainted-sql-string
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected user input used to manually construct a SQL string. This is usually bad practice because 
+          manual construction could accidentally result in a SQL injection. An attacker could use a SQL     
+          injection to steal or modify contents of the database. Instead, use a parameterized query which is
+          available by default in most database engines. Alternatively, consider using the Django object-   
+          relational mappers (ORM) instead of raw SQL queries.                                              
+          Details: https://sg.run/PbZp                                                                      
+                                                                                                            
+           51┆ query = f"SELECT * FROM kyc_records WHERE bvn = '{bvn}'"
+   
+   ❯❯❱ python.flask.security.injection.tainted-sql-string.tainted-sql-string
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected user input used to manually construct a SQL string. This is usually bad practice because 
+          manual construction could accidentally result in a SQL injection. An attacker could use a SQL     
+          injection to steal or modify contents of the database. Instead, use a parameterized query which is
+          available by default in most database engines. Alternatively, consider using an object-relational 
+          mapper (ORM) such as SQLAlchemy which will protect your queries.                                  
+          Details: https://sg.run/JxZj                                                                      
+                                                                                                            
+           51┆ query = f"SELECT * FROM kyc_records WHERE bvn = '{bvn}'"
+   
+   ❯❯❱ python.django.security.injection.tainted-sql-string.tainted-sql-string
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected user input used to manually construct a SQL string. This is usually bad practice because 
+          manual construction could accidentally result in a SQL injection. An attacker could use a SQL     
+          injection to steal or modify contents of the database. Instead, use a parameterized query which is
+          available by default in most database engines. Alternatively, consider using the Django object-   
+          relational mappers (ORM) instead of raw SQL queries.                                              
+          Details: https://sg.run/PbZp                                                                      
+                                                                                                            
+           53┆ query = f"SELECT * FROM kyc_records WHERE nin = '{nin}'"
+   
+   ❯❯❱ python.flask.security.injection.tainted-sql-string.tainted-sql-string
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected user input used to manually construct a SQL string. This is usually bad practice because 
+          manual construction could accidentally result in a SQL injection. An attacker could use a SQL     
+          injection to steal or modify contents of the database. Instead, use a parameterized query which is
+          available by default in most database engines. Alternatively, consider using an object-relational 
+          mapper (ORM) such as SQLAlchemy which will protect your queries.                                  
+          Details: https://sg.run/JxZj                                                                      
+                                                                                                            
+           53┆ query = f"SELECT * FROM kyc_records WHERE nin = '{nin}'"
+                                                   
+  [36m[22m[24m  services/payments-api/Dockerfile[0m
+   ❯❯❱ dockerfile.security.missing-user.missing-user
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          By not specifying a USER, a program in the container may run as 'root'. This is a security hazard.
+          If an attacker can control a process running as root, they may have control over the container.   
+          Ensure that the last USER in a Dockerfile is a USER other than 'root'.                            
+          Details: https://sg.run/Gbvn                                                                      
+                                                                                                            
+           ▶▶┆ Autofix ▶ USER non-root CMD ["python", "-m", "app.main"]
+           12┆ CMD ["python", "-m", "app.main"]
+                                                    
+  [36m[22m[24m  services/payments-api/app/auth.py[0m
+    ❯❱ python.lang.security.audit.md5-used-as-password.md5-used-as-password
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          It looks like MD5 is used as a password hash. MD5 is not considered a secure password hash because  
+          it can be cracked by an attacker in a short amount of time. Use a suitable password hashing function
+          such as scrypt. You can use `hashlib.scrypt`.                                                       
+          Details: https://sg.run/5DwD                                                                        
+                                                                                                              
+           22┆ return hashlib.md5(password.encode()).hexdigest()
+   
+   ❯❯❱ python.jwt.security.jwt-none-alg.jwt-python-none-alg
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected use of the 'none' algorithm in a JWT token. The 'none' algorithm assumes the integrity of
+          the token has already been verified. This would allow a malicious actor to forge a JWT token that 
+          will automatically be verified. Do not explicitly use the 'none' algorithm. Instead, use an       
+          algorithm such as 'HS256'.                                                                        
+          Details: https://sg.run/Yvp4                                                                      
+                                                                                                            
+           46┆ return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"],
+               options={"verify_signature": False})                              
+   
+   ❯❯❱ python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token
+          which means the token could be tampered with by malicious actors. Ensure that the JWT token is  
+          verified.                                                                                       
+          Details: https://sg.run/6nyB                                                                    
+                                                                                                          
+           ▶▶┆ Autofix ▶ True
+           46┆ return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"],
+               options={"verify_signature": False})                              
+                                                    
+  [36m[22m[24m  services/payments-api/app/main.py[0m
+    ❯❱ python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Running flask app with host 0.0.0.0 could expose the server publicly.
+          Details: https://sg.run/eLby                                         
+                                                                               
+           44┆ app.run(host="0.0.0.0", port=8001, debug=True)
+   
+    ❯❱ python.flask.security.audit.debug-enabled.debug-enabled
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will   
+          leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug'
+          using system environment variables.                                                                 
+          Details: https://sg.run/dKrd                                                                        
+                                                                                                              
+           44┆ app.run(host="0.0.0.0", port=8001, debug=True)
+                                                               
+  [36m[22m[24m  services/payments-api/app/routes/accounts.py[0m
+   ❯❯❱ python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL
+          Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy      
+          provides TextualSQL to easily used prepared statement with named parameters. For complex SQL        
+          composition, use SQL Expression Language or Schema Definition Language. In most cases, SQLAlchemy   
+          ORM will be a better option.                                                                        
+          Details: https://sg.run/2b1L                                                                        
+                                                                                                              
+           76┆ cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
+                                                            
+  [36m[22m[24m  services/payments-api/app/routes/admin.py[0m
+    ❯❱ python.lang.security.deserialization.pickle.avoid-pickle
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Avoid using `pickle`, which is known to lead to code execution vulnerabilities. When unpickling, the
+          serialized data could be manipulated to run arbitrary code. Instead, consider serializing the       
+          relevant data as JSON or a similar text-based serialization format.                                 
+          Details: https://sg.run/OPwB                                                                        
+                                                                                                              
+           35┆ session = pickle.loads(raw)
+

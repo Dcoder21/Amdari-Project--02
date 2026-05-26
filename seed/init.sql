@@ -52,13 +52,13 @@ CREATE TABLE IF NOT EXISTS webhooks (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
--- Seed users (passwords are MD5 of "password123", "admin2024", "merchant1")
+-- Seed users (passwords are Argon2id of "password123", "admin2024", "merchant1")
 INSERT INTO users (email, password_hash, full_name, role) VALUES
-    ('admin@sentinelpay.io', '482c811da5d5b4bc6d497ffa98491e38', 'Adaeze Okonkwo', 'admin'),
-    ('finance@sentinelpay.io', '78c2e10018a4fa37b4f4b5e62a8e90bb', 'Tunde Bakare', 'finance'),
-    ('merchant1@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Lagos Foods Ltd', 'merchant'),
-    ('merchant2@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Accra Logistics Co', 'merchant'),
-    ('merchant3@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Nairobi Tech Hub', 'merchant');
+    ('admin@sentinelpay.io', '$argon2id$v=19$m=65536,t=3,p=4$i6LIzkCZP3UzLqxrRkucdA$U/LGgB5xrgEgVYLIzlCe2l5mfbcVBcgGS8pMi/8GDsw', 'Adaeze Okonkwo', 'admin'),
+    ('finance@sentinelpay.io', '$argon2id$v=19$m=65536,t=3,p=4$odgncidqyKGf9GfznqOxzQ$3fObOhaQpY33sh0/SJB13h5hgbMkIAvbxZDghIjVkek', 'Tunde Bakare', 'finance'),
+    ('merchant1@example.com', '$argon2id$v=19$m=65536,t=3,p=4$u2sY2EfRfIfuEW8467YVfg$s+zmLFArj4KcCP6qNG7X7pKUimRPW+qsUOVhGWop6go', 'Lagos Foods Ltd', 'merchant'),
+    ('merchant2@example.com', '$argon2id$v=19$m=65536,t=3,p=4$WoChw+UWgaAgpm6WpaYTzg$anwKr5V/dpOXlKnMCA9yYc6QMoG5hoqJ6BvajqnDriY', 'Accra Logistics Co', 'merchant'),
+    ('merchant3@example.com', '$argon2id$v=19$m=65536,t=3,p=4$wOoaUCgfIhs3d6bqdbY+vg$ygg9HIxHqN13lP6yJiM9AXA9P4aGAy1+XsX9JfUCeO8', 'Nairobi Tech Hub', 'merchant');
 
 INSERT INTO accounts (user_id, account_number, currency, balance) VALUES
     (1, '0010000001', 'NGN', 0.00),

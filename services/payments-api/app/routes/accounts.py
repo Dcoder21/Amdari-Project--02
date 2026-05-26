@@ -1,8 +1,10 @@
 """Account lookup and listing endpoints."""
-from flask import Blueprint, request, jsonify
 
-from app.db import get_connection
+from flask import Blueprint, jsonify, request
+
+from app.audit import audit_log
 from app.auth import require_auth
+from app.db import get_connection
 
 accounts_bp = Blueprint("accounts", __name__)
 
@@ -10,24 +12,38 @@ accounts_bp = Blueprint("accounts", __name__)
 @accounts_bp.route("/<int:account_id>", methods=["GET"])
 @require_auth
 def get_account(account_id):
-    """Look up an account by ID.
-
-    V-APP-03 (the originating incident): No ownership check. Any authenticated
-    user can read any account by guessing or enumerating IDs. This is the
-    finding the researcher publicly disclosed on 14 April 2026.
-    """
+    """Look up an account by ID with ownership enforcement."""
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
             "SELECT id, user_id, account_number, currency, balance, status, created_at "
-            "FROM accounts WHERE id = %s",
-            (account_id,)
+            "FROM accounts WHERE id = %s AND user_id = %s",
+            (account_id, request.current_user_id),
         )
+
         account = cur.fetchone()
+
         if not account:
+            audit_log(
+                "account.lookup.denied",
+                actor_id=request.current_user_id,
+                target={"account_id": account_id},
+                outcome="denied",
+                details={"reason": "not_found_or_not_owner"},
+            )
             return jsonify({"error": "account not found"}), 404
+
+        audit_log(
+            "account.lookup.success",
+            actor_id=request.current_user_id,
+            target={"account_id": account_id},
+            outcome="success",
+        )
+
         return jsonify(dict(account))
+
     finally:
         cur.close()
         conn.close()
@@ -39,13 +55,25 @@ def list_accounts():
     """List accounts belonging to the current user."""
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
-            "SELECT id, account_number, currency, balance, status FROM accounts WHERE user_id = %s",
-            (request.current_user_id,)
+            "SELECT id, account_number, currency, balance, status "
+            "FROM accounts WHERE user_id = %s",
+            (request.current_user_id,),
         )
+
         rows = cur.fetchall()
+
+        audit_log(
+            "account.list.success",
+            actor_id=request.current_user_id,
+            outcome="success",
+            details={"account_count": len(rows)},
+        )
+
         return jsonify([dict(r) for r in rows])
+
     finally:
         cur.close()
         conn.close()
@@ -54,29 +82,46 @@ def list_accounts():
 @accounts_bp.route("/<int:account_id>/profile", methods=["PUT"])
 @require_auth
 def update_profile(account_id):
-    """Update account profile fields.
+    """Reject unsafe account profile updates.
 
-    V-APP-07: Mass assignment. The update accepts an arbitrary dict and writes
-    every key the client provides, including 'status', 'user_id', and 'balance'.
-    A merchant can transfer an account to themselves or set their balance.
+    The original implementation allowed mass assignment. In the current schema,
+    account_number, balance, status, currency, and user_id should not be
+    user-editable.
     """
     data = request.get_json() or {}
+
+    if not data:
+        return jsonify({"error": "no fields supplied"}), 400
+
     conn = get_connection()
     cur = conn.cursor()
-    try:
-        # Build dynamic SET clause from whatever the client sent
-        if not data:
-            return jsonify({"error": "no fields supplied"}), 400
 
-        set_clause = ", ".join([f"{k} = %s" for k in data.keys()])
-        values = list(data.values()) + [account_id]
-        # Note: this is intentionally a parameterised query for the *values*,
-        # but the column names are concatenated from user input — see V-APP-07.
-        # SQLi on column names is not the bug here; mass assignment is.
-        cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
-        updated = cur.fetchone()
-        conn.commit()
-        return jsonify(dict(updated))
+    try:
+        cur.execute(
+            "SELECT id FROM accounts WHERE id = %s AND user_id = %s",
+            (account_id, request.current_user_id),
+        )
+
+        if not cur.fetchone():
+            audit_log(
+                "account.profile_update.denied",
+                actor_id=request.current_user_id,
+                target={"account_id": account_id},
+                outcome="denied",
+                details={"reason": "not_found_or_not_owner"},
+            )
+            return jsonify({"error": "account not found"}), 404
+
+        audit_log(
+            "account.profile_update.rejected",
+            actor_id=request.current_user_id,
+            target={"account_id": account_id},
+            outcome="rejected",
+            details={"reason": "no_user_editable_fields", "submitted_fields": list(data.keys())},
+        )
+
+        return jsonify({"error": "no account profile fields are user-editable"}), 400
+
     finally:
         cur.close()
         conn.close()

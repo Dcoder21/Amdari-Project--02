@@ -1,0 +1,98 @@
+                    
+                    
+┌──────────────────┐
+│ 11 Code Findings │
+└──────────────────┘
+                                           
+  [36m[22m[24m  docs/scans/gitleaks.json[0m
+   ❯❯❱ generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Stripe API Key detected     
+          Details: https://sg.run/dKd5
+                                      
+           30┆ "Match": "sk_live_51HxFakeKeyForTrainingPurposesOnly9876543210\"",
+            ⋮┆----------------------------------------
+           31┆ "Secret": "sk_live_51HxFakeKeyForTrainingPurposesOnly9876543210",
+                                         
+  [36m[22m[24m  docs/scans/semgrep.txt[0m
+   ❯❯❱ generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Stripe API Key detected     
+          Details: https://sg.run/dKd5
+                                      
+           50┆ 21┆ export PARTNER_API_KEY="sk_live_51HxFakeKeyForTrainingPurposesOnly9876543210"
+                                           
+  [36m[22m[24m  scripts/legacy_deploy.sh[0m
+   ❯❯❱ generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Stripe API Key detected     
+          Details: https://sg.run/dKd5
+                                      
+           21┆ export PARTNER_API_KEY="sk_live_51HxFakeKeyForTrainingPurposesOnly9876543210"
+                                              
+  [36m[22m[24m  services/kyc-api/Dockerfile[0m
+   ❯❯❱ dockerfile.security.missing-user.missing-user
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          By not specifying a USER, a program in the container may run as 'root'. This is a security hazard.
+          If an attacker can control a process running as root, they may have control over the container.   
+          Ensure that the last USER in a Dockerfile is a USER other than 'root'.                            
+          Details: https://sg.run/Gbvn                                                                      
+                                                                                                            
+           ▶▶┆ Autofix ▶ USER non-root CMD ["python", "-m", "app.main"]
+           12┆ CMD ["python", "-m", "app.main"]
+                                               
+  [36m[22m[24m  services/kyc-api/app/main.py[0m
+    ❯❱ python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Running flask app with host 0.0.0.0 could expose the server publicly.
+          Details: https://sg.run/eLby                                         
+                                                                               
+           25┆ app.run(host="0.0.0.0", port=8002, debug=True)
+   
+    ❯❱ python.flask.security.audit.debug-enabled.debug-enabled
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will   
+          leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug'
+          using system environment variables.                                                                 
+          Details: https://sg.run/dKrd                                                                        
+                                                                                                              
+           25┆ app.run(host="0.0.0.0", port=8002, debug=True)
+                                                   
+  [36m[22m[24m  services/payments-api/Dockerfile[0m
+   ❯❯❱ dockerfile.security.missing-user.missing-user
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          By not specifying a USER, a program in the container may run as 'root'. This is a security hazard.
+          If an attacker can control a process running as root, they may have control over the container.   
+          Ensure that the last USER in a Dockerfile is a USER other than 'root'.                            
+          Details: https://sg.run/Gbvn                                                                      
+                                                                                                            
+           ▶▶┆ Autofix ▶ USER non-root CMD ["python", "-m", "app.main"]
+           12┆ CMD ["python", "-m", "app.main"]
+                                                    
+  [36m[22m[24m  services/payments-api/app/main.py[0m
+    ❯❱ python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Running flask app with host 0.0.0.0 could expose the server publicly.
+          Details: https://sg.run/eLby                                         
+                                                                               
+           44┆ app.run(host="0.0.0.0", port=8001, debug=True)
+   
+    ❯❱ python.flask.security.audit.debug-enabled.debug-enabled
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will   
+          leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug'
+          using system environment variables.                                                                 
+          Details: https://sg.run/dKrd                                                                        
+                                                                                                              
+           44┆ app.run(host="0.0.0.0", port=8001, debug=True)
+                                                            
+  [36m[22m[24m  services/payments-api/app/routes/admin.py[0m
+    ❯❱ python.lang.security.deserialization.pickle.avoid-pickle
+          [31m[1m[24m❰❰ Blocking ❱❱[0m
+          Avoid using `pickle`, which is known to lead to code execution vulnerabilities. When unpickling, the
+          serialized data could be manipulated to run arbitrary code. Instead, consider serializing the       
+          relevant data as JSON or a similar text-based serialization format.                                 
+          Details: https://sg.run/OPwB                                                                        
+                                                                                                              
+           35┆ session = pickle.loads(raw)
+

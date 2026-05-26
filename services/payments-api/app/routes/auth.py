@@ -1,38 +1,69 @@
 """Authentication routes: registration, login, and OTP."""
-from flask import Blueprint, request, jsonify
 
+import secrets
+
+from flask import Blueprint, jsonify, request
+
+from app.audit import audit_log
+from app.auth import hash_password, issue_token, verify_password
 from app.db import get_connection
-from app.auth import hash_password, verify_password, issue_token
 
 auth_bp = Blueprint("auth", __name__)
 
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
-    """Register a new merchant account.
-
-    V-APP-08: No rate limiting. Anyone can hammer this endpoint to enumerate
-    existing emails (via the unique-constraint error response).
-    """
+    """Register a new merchant account."""
     data = request.get_json() or {}
+
     email = data.get("email")
     password = data.get("password")
     full_name = data.get("full_name", "")
-    role = data.get("role", "merchant")  # V-APP-07: client can self-assign role
 
     if not email or not password:
+        audit_log(
+            "auth.register.failed",
+            outcome="failed",
+            details={"reason": "missing_email_or_password", "email": email},
+        )
         return jsonify({"error": "email and password required"}), 400
+
+    # Do not trust client-supplied roles. New self-service users are merchants.
+    role = "merchant"
 
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
-            "INSERT INTO users (email, password_hash, full_name, role) VALUES (%s, %s, %s, %s) RETURNING id",
-            (email, hash_password(password), full_name, role)
+            "INSERT INTO users (email, password_hash, full_name, role) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (email, hash_password(password), full_name, role),
         )
+
         user_id = cur.fetchone()["id"]
         conn.commit()
+
+        audit_log(
+            "auth.register.success",
+            actor_id=user_id,
+            outcome="success",
+            details={"email": email, "role": role},
+        )
+
         return jsonify({"id": user_id, "email": email, "role": role}), 201
+
+    except Exception as exc:
+        conn.rollback()
+
+        audit_log(
+            "auth.register.failed",
+            outcome="failed",
+            details={"email": email, "reason": type(exc).__name__},
+        )
+
+        raise
+
     finally:
         cur.close()
         conn.close()
@@ -40,26 +71,50 @@ def register():
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
-    """Authenticate a user and issue a JWT.
-
-    V-APP-08: No rate limiting or lockout. Brute force is trivial.
-    """
+    """Authenticate a user and issue a JWT."""
     data = request.get_json() or {}
+
     email = data.get("email")
     password = data.get("password")
 
     conn = get_connection()
     cur = conn.cursor()
+
     try:
-        cur.execute("SELECT id, password_hash, role, is_active FROM users WHERE email = %s", (email,))
+        cur.execute(
+            "SELECT id, password_hash, role, is_active FROM users WHERE email = %s",
+            (email,),
+        )
         user = cur.fetchone()
+
         if not user or not verify_password(password, user["password_hash"]):
+            audit_log(
+                "auth.login.failed",
+                outcome="failed",
+                details={"email": email, "reason": "invalid_credentials"},
+            )
             return jsonify({"error": "invalid credentials"}), 401
+
         if not user["is_active"]:
+            audit_log(
+                "auth.login.failed",
+                actor_id=user["id"],
+                outcome="failed",
+                details={"email": email, "reason": "account_suspended"},
+            )
             return jsonify({"error": "account suspended"}), 403
 
         token = issue_token(user["id"], user["role"])
+
+        audit_log(
+            "auth.login.success",
+            actor_id=user["id"],
+            outcome="success",
+            details={"email": email, "role": user["role"]},
+        )
+
         return jsonify({"token": token, "user_id": user["id"], "role": user["role"]})
+
     finally:
         cur.close()
         conn.close()
@@ -69,14 +124,18 @@ def login():
 def request_otp():
     """Request an OTP code for step-up authentication.
 
-    V-APP-08: No rate limiting. Plus the OTP is logged below for "debugging".
+    This still needs rate limiting and real OTP delivery later.
     """
-    import random
     data = request.get_json() or {}
     phone = data.get("phone")
 
-    otp = str(random.randint(100000, 999999))
-    # TODO: remove debug logging before production
-    print(f"[OTP DEBUG] Generated OTP {otp} for {phone}")
+    otp = str(secrets.randbelow(900000) + 100000)
 
+    audit_log(
+        "auth.otp.requested",
+        outcome="success",
+        details={"phone": phone},
+    )
+
+    # Do not print the OTP in production. This is only a placeholder response.
     return jsonify({"status": "sent", "phone": phone})

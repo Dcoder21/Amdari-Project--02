@@ -1,66 +1,136 @@
-"""Authentication helpers.
+"""Authentication helpers for payments-api."""
 
-NOTE TO MAINTAINERS: this module was last touched 14 months ago. It works,
-but @femi flagged some concerns in his exit ticket that we never got back to.
-See PR #284 (closed without merge).
-"""
+import json
 import os
-import hashlib
-import jwt
+from datetime import datetime, timedelta, timezone
 from functools import wraps
-from flask import request, jsonify
+from pathlib import Path
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
+import jwt
+from argon2 import PasswordHasher, Type
+from argon2.exceptions import VerificationError, VerifyMismatchError
+from flask import jsonify, request
+
+JWT_ALGORITHM = "RS256"
+JWT_ISSUER = os.environ.get("JWT_ISSUER", "sentinelpay-payments-api")
+JWT_EXP_MINUTES = int(os.environ.get("JWT_EXP_MINUTES", "60"))
+JWT_ACTIVE_KID = os.environ.get("JWT_ACTIVE_KID", "dev-key-1")
+
+JWT_PRIVATE_KEY_PATH = os.environ.get("JWT_PRIVATE_KEY_PATH")
+JWT_PUBLIC_KEYS_PATH = os.environ.get("JWT_PUBLIC_KEYS_PATH")
+
+if not JWT_PRIVATE_KEY_PATH:
+    raise RuntimeError("JWT_PRIVATE_KEY_PATH must be set")
+
+if not JWT_PUBLIC_KEYS_PATH:
+    raise RuntimeError("JWT_PUBLIC_KEYS_PATH must be set")
+
+
+def load_private_key() -> str:
+    """Load the active private key used to sign JWTs."""
+    return Path(JWT_PRIVATE_KEY_PATH).read_text()
+
+
+def load_public_keys() -> dict:
+    """Load public keys used to verify JWTs by key ID."""
+    return json.loads(Path(JWT_PUBLIC_KEYS_PATH).read_text())
+
+
+JWT_PRIVATE_KEY = load_private_key()
+JWT_PUBLIC_KEYS = load_public_keys()
+
+password_hasher = PasswordHasher(type=Type.ID)
 
 
 def hash_password(password: str) -> str:
-    """Hash a password for storage.
-
-    V-APP-06: Uses MD5 with no salt. Trivially reversible for common passwords
-    via rainbow tables, and MD5 is cryptographically broken regardless.
-    """
-    return hashlib.md5(password.encode()).hexdigest()
+    """Hash a password using Argon2id."""
+    return password_hasher.hash(password)
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    return hash_password(password) == stored_hash
+    """Verify a password against an Argon2id hash."""
+    try:
+        return password_hasher.verify(stored_hash, password)
+    except (VerifyMismatchError, VerificationError, ValueError):
+        return False
 
 
 def issue_token(user_id: int, role: str) -> str:
-    """Issue a JWT for an authenticated user.
+    """Issue a signed JWT for an authenticated user."""
+    now = datetime.now(timezone.utc)
 
-    V-APP-02 (part 1): HS256 with a low-entropy, repository-committed secret.
-    """
-    payload = {"user_id": user_id, "role": role}
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    payload = {
+        "user_id": user_id,
+        "role": role,
+        "iat": now,
+        "exp": now + timedelta(minutes=JWT_EXP_MINUTES),
+        "iss": JWT_ISSUER,
+    }
+
+    token = jwt.encode(
+        payload,
+        JWT_PRIVATE_KEY,
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": JWT_ACTIVE_KID},
+    )
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
+    return token
 
 
 def decode_token(token: str) -> dict:
-    """Decode and verify a JWT.
+    """Decode and verify a JWT using the public key identified by kid."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as exc:
+        raise jwt.InvalidTokenError("invalid token header") from exc
 
-    V-APP-02 (part 2): PyJWT 1.7.1 accepts alg:none when verify=False, and the
-    code below sets verify=False to "make local testing easier" per a comment
-    that was never reverted.
-    """
-    # TODO(femi): re-enable verification once we sort out the staging keys
-    return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"], options={"verify_signature": False})
+    if header.get("alg") != JWT_ALGORITHM:
+        raise jwt.InvalidTokenError("unexpected signing algorithm")
+
+    kid = header.get("kid")
+    if not kid:
+        raise jwt.InvalidTokenError("missing key id")
+
+    public_key = JWT_PUBLIC_KEYS.get(kid)
+    if not public_key:
+        raise jwt.InvalidTokenError("unknown key id")
+
+    return jwt.decode(
+        token,
+        public_key,
+        algorithms=[JWT_ALGORITHM],
+        issuer=JWT_ISSUER,
+    )
 
 
 def require_auth(f):
     """Decorator that extracts the current user from the Authorization header."""
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
+
         if not auth_header.startswith("Bearer "):
             return jsonify({"error": "missing or malformed Authorization header"}), 401
 
-        token = auth_header.replace("Bearer ", "")
+        token = auth_header.replace("Bearer ", "", 1)
+
         try:
             payload = decode_token(token)
-        except Exception as e:
-            return jsonify({"error": f"invalid token: {e}"}), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "token expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "invalid token"}), 401
 
         request.current_user_id = payload.get("user_id")
         request.current_user_role = payload.get("role")
+
+        if not request.current_user_id:
+            return jsonify({"error": "invalid token"}), 401
+
         return f(*args, **kwargs)
+
     return wrapper
