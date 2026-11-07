@@ -12,9 +12,9 @@ accounts_bp = Blueprint("accounts", __name__)
 def get_account(account_id):
     """Look up an account by ID.
 
-    V-APP-03 (the originating incident): No ownership check. Any authenticated
-    user can read any account by guessing or enumerating IDs. This is the
-    finding the researcher publicly disclosed on 14 April 2026.
+    Fix for V-APP-03: ownership (or admin role) is now required. Previously
+    any authenticated user could read any account by guessing or enumerating
+    IDs — the finding the researcher publicly disclosed on 14 April 2026.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -27,6 +27,8 @@ def get_account(account_id):
         account = cur.fetchone()
         if not account:
             return jsonify({"error": "account not found"}), 404
+        if account["user_id"] != request.current_user_id and request.current_user_role != "admin":
+            return jsonify({"error": "forbidden"}), 403
         return jsonify(dict(account))
     finally:
         cur.close()

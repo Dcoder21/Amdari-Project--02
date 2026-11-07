@@ -12,7 +12,11 @@ wallets_bp = Blueprint("wallets", __name__)
 @wallets_bp.route("/<int:account_id>/credit", methods=["POST"])
 @require_auth
 def credit_wallet(account_id):
-    """Credit funds to a wallet (e.g. inbound transfer settlement)."""
+    """Credit funds to a wallet (e.g. inbound transfer settlement).
+
+    Fix for V-APP-03: ownership (or admin role) is now required — previously
+    any authenticated caller could credit an arbitrary account_id.
+    """
     data = request.get_json() or {}
     amount = Decimal(str(data.get("amount", "0")))
     description = data.get("description", "credit")
@@ -23,10 +27,12 @@ def credit_wallet(account_id):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT balance FROM accounts WHERE id = %s", (account_id,))
+        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s", (account_id,))
         row = cur.fetchone()
         if not row:
             return jsonify({"error": "account not found"}), 404
+        if row["user_id"] != request.current_user_id and request.current_user_role != "admin":
+            return jsonify({"error": "forbidden"}), 403
 
         new_balance = Decimal(str(row["balance"])) + amount
         cur.execute("UPDATE accounts SET balance = %s WHERE id = %s", (new_balance, account_id))
@@ -59,6 +65,9 @@ def debit_wallet(account_id):
     V-APP-11: No audit log. Money movement is the most sensitive operation
     in the platform, and there is no structured log of who debited what,
     when, from where, and against which idempotency key.
+
+    Fix for V-APP-03: ownership (or admin role) is now required — previously
+    any authenticated caller could debit an arbitrary account_id.
     """
     data = request.get_json() or {}
     amount = Decimal(str(data.get("amount", "0")))
@@ -72,10 +81,12 @@ def debit_wallet(account_id):
     cur = conn.cursor()
     try:
         # Read balance (no lock)
-        cur.execute("SELECT balance FROM accounts WHERE id = %s", (account_id,))
+        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s", (account_id,))
         row = cur.fetchone()
         if not row:
             return jsonify({"error": "account not found"}), 404
+        if row["user_id"] != request.current_user_id and request.current_user_role != "admin":
+            return jsonify({"error": "forbidden"}), 403
 
         current_balance = Decimal(str(row["balance"]))
         if current_balance < amount:
