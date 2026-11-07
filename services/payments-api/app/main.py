@@ -2,7 +2,7 @@
 import os
 from decimal import Decimal
 from flask import Flask, jsonify
-from flask.json import JSONEncoder
+from flask.json.provider import DefaultJSONProvider
 
 from app.routes.auth import auth_bp
 from app.routes.accounts import accounts_bp
@@ -13,22 +13,28 @@ from app.routes.admin import admin_bp
 from app.audit import ensure_audit_table
 
 
-class DecimalJSONEncoder(JSONEncoder):
+class DecimalJSONProvider(DefaultJSONProvider):
     """Environment-compatibility note (not a security fix): NUMERIC columns
-    come back from psycopg2 as Decimal, which Flask 2.0's default encoder
+    come back from psycopg2 as Decimal, which Flask's default JSON provider
     cannot serialise. Without this every route that returns a balance
     crashes with a 500, regardless of any vulnerability. Route logic and
-    authorisation are untouched."""
+    authorisation are untouched.
 
-    def default(self, obj):
+    Fix for DEPS: Flask 3.x removed app.json_encoder entirely in favour of
+    a JSONProvider set on app.json; this is that provider's replacement
+    for the old DecimalJSONEncoder.
+    """
+
+    @staticmethod
+    def default(obj):
         if isinstance(obj, Decimal):
             return str(obj)
-        return super().default(obj)
+        return DefaultJSONProvider.default(obj)
 
 
 def create_app():
     app = Flask(__name__)
-    app.json_encoder = DecimalJSONEncoder
+    app.json = DecimalJSONProvider(app)
     app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
 
     # Fix for V-APP-11: ensure the audit_log table exists even against an

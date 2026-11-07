@@ -416,18 +416,23 @@ def test_v_app_04_fix_webhook_registration_accepts_public_callback_url(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-06 — FIXED: salted PBKDF2-SHA256 instead of unsalted MD5, with
-# transparent upgrade of any still-legacy hash on next successful login.
-# See app/auth.py and app/routes/auth.py.
+# V-APP-06 — FIXED: salted hashing (werkzeug's generate_password_hash;
+# scrypt as of werkzeug 3.1, previously pbkdf2:sha256 — either way, not
+# unsalted MD5) with transparent upgrade of any still-legacy hash on next
+# successful login. See app/auth.py and app/routes/auth.py.
 # --------------------------------------------------------------------------
-def test_v_app_06_fix_new_hashes_are_salted_pbkdf2_not_md5():
+def test_v_app_06_fix_new_hashes_are_salted_not_md5():
     import hashlib
 
     h = hash_password("Test#Pass123")
     assert h != hashlib.md5(b"Test#Pass123").hexdigest()
-    assert h.startswith("pbkdf2:")
+    assert not _is_bare_32_char_hex(h), "expected a salted, method-prefixed hash, not a bare MD5-shaped digest"
     # Salted: the same password hashes differently each time.
     assert hash_password("same-password") != hash_password("same-password")
+
+
+def _is_bare_32_char_hex(value: str) -> bool:
+    return len(value) == 32 and all(c in "0123456789abcdef" for c in value.lower())
 
 
 def test_v_app_06_fix_verify_password_still_accepts_legacy_md5_hash():
