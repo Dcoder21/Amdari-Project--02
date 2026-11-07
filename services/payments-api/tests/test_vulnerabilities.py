@@ -13,6 +13,7 @@ Run inside the payments-api container, where DATABASE_URL resolves the
 Requires requirements-dev.txt (pytest) installed in the image/container.
 """
 import base64
+import json
 import os
 import pickle
 import uuid
@@ -633,9 +634,12 @@ def test_v_app_09_fix_error_response_no_longer_leaks_stack_trace(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-10 — insecure deserialisation (pickle RCE)
+# V-APP-10 — FIXED: the session blob is now parsed as JSON, not unpickled.
+# See app/routes/admin.py.
 # --------------------------------------------------------------------------
-def test_v_app_10_pickle_deserialisation_executes_arbitrary_code(client, tmp_path):
+def test_v_app_10_fix_pickle_payload_no_longer_executes(client):
+    """The same gadget that used to touch a marker file via pickle.loads()
+    must now fail to parse (it isn't valid JSON) instead of executing."""
     _, token = register_and_login(client)
     marker = f"/tmp/pwned_v_app_10_{uuid.uuid4().hex}"
     assert not os.path.exists(marker)
@@ -652,13 +656,27 @@ def test_v_app_10_pickle_deserialisation_executes_arbitrary_code(client, tmp_pat
     )
 
     try:
-        assert os.path.exists(marker), (
-            f"expected pickle.loads() to execute os.system() as a side effect; "
-            f"restore_session returned {resp.status_code} {resp.get_json()}"
-        )
+        assert not os.path.exists(marker), "pickle payload must no longer be executed"
+        assert resp.status_code == 400
     finally:
         if os.path.exists(marker):
             os.remove(marker)
+
+
+def test_v_app_10_fix_legitimate_json_session_still_restores(client):
+    """Confirms the fix didn't just break the endpoint: a genuine JSON
+    session blob still round-trips."""
+    _, token = register_and_login(client)
+    session = {"user_id": 1, "role": "admin", "last_seen": "2026-01-01"}
+    blob = base64.b64encode(json.dumps(session).encode()).decode()
+
+    resp = client.post(
+        "/v1/admin/session/restore",
+        json={"session": blob},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert sorted(resp.get_json()["session_keys"]) == sorted(session.keys())
 
 
 # --------------------------------------------------------------------------
