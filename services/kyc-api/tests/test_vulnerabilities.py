@@ -153,28 +153,41 @@ def test_v_app_01_fix_injection_payload_no_longer_leaks_rows(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-04 (variant) — SSRF via client-supplied BVN provider URL
+# V-APP-04 (variant) — FIXED: the provider URL is now validated against
+# private/loopback/link-local/reserved destinations before being fetched.
+# See app/routes/verify.py and app/ssrf_guard.py.
 # --------------------------------------------------------------------------
-def test_v_app_04_ssrf_via_bvn_provider(client):
-    """The 'provider' field lets the caller redirect the server-side POST
-    anywhere, including services never meant to be reachable from outside
-    their own trust boundary. Demonstrated here against payments-api's
-    internal health endpoint, which a KYC caller has no legitimate reason
-    to reach."""
-    # verify_bvn always POSTs to `provider`, so the target has to accept POST.
-    # payments-api's own OTP endpoint does and needs no auth — a KYC caller
-    # has no legitimate reason to be able to reach it at all.
+def test_v_app_04_fix_internal_provider_url_is_blocked(client):
+    """The same internal payments-api target that used to be reachable via
+    the 'provider' override must now be rejected with 400, not fetched."""
     resp = client.post(
         "/v1/verify/bvn",
         json={"bvn": "12345678901", "provider": "http://payments-api:8001/v1/auth/otp"},
         headers=auth_header(mint_token()),
     )
-    assert resp.status_code == 200, resp.get_json()
-    body = resp.get_json()
-    assert '"status": "sent"' in body["provider_response"], (
-        "expected the server to have fetched an arbitrary internal URL and "
-        "returned its response body, proving no destination allow-list exists"
-    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_guard_rejects_private_and_internal_ranges():
+    """Unit coverage of the guard itself, independent of DNS/network
+    availability in CI: loopback, link-local (incl. cloud metadata),
+    RFC1918 private ranges, and non-http(s) schemes must all be rejected."""
+    from app.ssrf_guard import is_safe_external_url
+
+    assert is_safe_external_url("http://127.0.0.1/") is False
+    assert is_safe_external_url("http://169.254.169.254/latest/meta-data/") is False
+    assert is_safe_external_url("http://10.0.0.5/") is False
+    assert is_safe_external_url("http://192.168.1.1/") is False
+    assert is_safe_external_url("ftp://8.8.8.8/") is False
+    assert is_safe_external_url("not-a-url") is False
+
+
+def test_v_app_04_fix_guard_accepts_public_address():
+    """A genuinely public IP literal must still be allowed — confirms the
+    fix didn't just block everything."""
+    from app.ssrf_guard import is_safe_external_url
+
+    assert is_safe_external_url("https://8.8.8.8/bvn") is True
 
 
 # --------------------------------------------------------------------------

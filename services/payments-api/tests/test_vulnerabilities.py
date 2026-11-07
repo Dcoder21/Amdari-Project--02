@@ -375,6 +375,45 @@ def test_v_app_05_fix_concurrent_debits_no_longer_overdraw_the_account(client):
 
 
 # --------------------------------------------------------------------------
+# V-APP-04 — FIXED: webhook registration and test-fire now validate the
+# target URL against private/loopback/link-local/reserved destinations
+# before storing or fetching it. See app/routes/webhooks.py and
+# app/ssrf_guard.py. No pre-existing exploit test existed for this service
+# (only kyc-api's BVN-provider variant was covered in Week 1), so this is
+# new regression-only coverage added alongside the fix.
+# --------------------------------------------------------------------------
+def test_v_app_04_fix_webhook_test_blocks_cloud_metadata_address(client):
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/test",
+        json={"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_webhook_registration_rejects_internal_callback_url(client):
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/",
+        json={"callback_url": "http://127.0.0.1:8001/v1/admin/users"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_webhook_registration_accepts_public_callback_url(client):
+    """Confirms the fix didn't just break legitimate webhook registration."""
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/",
+        json={"callback_url": "https://8.8.8.8/webhooks/incoming"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 201, resp.get_json()
+
+
+# --------------------------------------------------------------------------
 # V-APP-06 — weak password hashing
 # --------------------------------------------------------------------------
 def test_v_app_06_passwords_are_unsalted_md5():
