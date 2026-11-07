@@ -22,4 +22,8 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=8002, debug=True)
+    # Fix for V-APP-09: debug mode (Werkzeug's interactive debugger, which
+    # can expose source and execute code) is now gated on ENVIRONMENT,
+    # not hardcoded on.
+    debug_mode = os.environ.get("ENVIRONMENT", "development") == "development"
+    app.run(host="0.0.0.0", port=8002, debug=debug_mode)

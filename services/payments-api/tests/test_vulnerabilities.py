@@ -616,9 +616,11 @@ def test_v_app_08_fix_otp_code_is_not_logged(capfd):
 
 
 # --------------------------------------------------------------------------
-# V-APP-09 — verbose error responses
+# V-APP-09 — FIXED: the global error handler now logs the traceback
+# server-side and returns a generic message, never the implementation
+# details. See app/main.py.
 # --------------------------------------------------------------------------
-def test_v_app_09_verbose_error_leaks_stack_trace(client):
+def test_v_app_09_fix_error_response_no_longer_leaks_stack_trace(client):
     _, token = register_and_login(client)
     resp = client.post(
         f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
@@ -627,7 +629,7 @@ def test_v_app_09_verbose_error_leaks_stack_trace(client):
     )
     assert resp.status_code == 500
     body = resp.get_json()
-    assert "trace" in body and "Traceback" in body["trace"]
+    assert body == {"error": "internal server error"}
 
 
 # --------------------------------------------------------------------------
