@@ -12,8 +12,8 @@ transactions_bp = Blueprint("transactions", __name__)
 def search_transactions():
     """Search transactions by reference, counterparty, or description.
 
-    V-APP-01: Classic SQL injection. The `q` parameter is concatenated directly
-    into the WHERE clause. Try /v1/transactions/search?q=' OR '1'='1
+    Fix for V-APP-01: `q` and `account_id` are now bound as query parameters
+    instead of interpolated into the SQL string.
     """
     q = request.args.get("q", "")
     account_id = request.args.get("account_id", "")
@@ -21,18 +21,24 @@ def search_transactions():
     conn = get_connection()
     cur = conn.cursor()
     try:
-        # Concatenation, not parameterisation. Bypass auth scoping with a clever payload.
+        like_pattern = f"%{q}%"
         query = (
             "SELECT id, account_id, reference, amount, currency, direction, "
             "counterparty, description, status, created_at "
-            f"FROM transactions WHERE (reference LIKE '%{q}%' "
-            f"OR counterparty LIKE '%{q}%' OR description LIKE '%{q}%')"
+            "FROM transactions WHERE (reference LIKE %s "
+            "OR counterparty LIKE %s OR description LIKE %s)"
         )
+        params = [like_pattern, like_pattern, like_pattern]
         if account_id:
-            query += f" AND account_id = {account_id}"
+            try:
+                account_id_int = int(account_id)
+            except ValueError:
+                return jsonify({"error": "account_id must be an integer"}), 400
+            query += " AND account_id = %s"
+            params.append(account_id_int)
         query += " ORDER BY created_at DESC LIMIT 50"
 
-        cur.execute(query)
+        cur.execute(query, params)
         rows = cur.fetchall()
         return jsonify([dict(r) for r in rows])
     finally:

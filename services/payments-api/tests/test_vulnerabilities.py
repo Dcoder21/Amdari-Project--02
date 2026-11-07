@@ -74,12 +74,13 @@ def auth_header(token):
 
 
 # --------------------------------------------------------------------------
-# V-APP-01 — SQL injection in transaction search
+# V-APP-01 — FIXED: transaction search now binds q/account_id as query
+# parameters instead of interpolating them into the SQL string. See
+# services/payments-api/app/routes/transactions.py.
 # --------------------------------------------------------------------------
-def test_v_app_01_sql_injection_in_transaction_search(client):
-    """A query that matches nothing legitimately still returns rows, because
-    the injected OR clause is always true. This proves string concatenation
-    into SQL, independent of any ownership scoping."""
+def test_v_app_01_fix_injection_payload_no_longer_leaks_rows(client):
+    """The same payload that used to leak every row via an always-true OR
+    clause must now be treated as a literal (non-matching) search string."""
     _, token = register_and_login(client)
 
     baseline = client.get(
@@ -96,8 +97,38 @@ def test_v_app_01_sql_injection_in_transaction_search(client):
         headers=auth_header(token),
     )
     assert injected.status_code == 200
-    rows = injected.get_json()
-    assert len(rows) > 0, "expected the injected OR clause to leak unrelated rows"
+    assert injected.get_json() == [], (
+        "expected the injection payload to be treated as a literal string "
+        "with no matching rows, not as SQL"
+    )
+
+
+def test_v_app_01_fix_account_id_rejects_non_integer_injection(client):
+    """account_id used to be concatenated too; a non-integer payload must now
+    be rejected outright instead of reaching the query."""
+    _, token = register_and_login(client)
+
+    resp = client.get(
+        "/v1/transactions/search",
+        query_string={"q": "", "account_id": "1 OR 1=1"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 400
+
+
+def test_v_app_01_fix_legitimate_search_still_works(client):
+    """Confirms the fix didn't just break search: a substring that genuinely
+    matches a seeded transaction's reference/counterparty/description still
+    comes back."""
+    _, token = register_and_login(client)
+
+    resp = client.get(
+        "/v1/transactions/search",
+        query_string={"q": "a"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    assert isinstance(resp.get_json(), list)
 
 
 # --------------------------------------------------------------------------
