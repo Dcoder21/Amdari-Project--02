@@ -129,9 +129,11 @@ def test_v_app_02_fix_legitimately_minted_token_is_accepted(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-01 (variant) — SQL injection in BVN/NIN lookup
+# V-APP-01 (variant) — FIXED: lookup_kyc now binds bvn/nin as query
+# parameters instead of interpolating them into the SQL string. See
+# services/kyc-api/app/routes/verify.py.
 # --------------------------------------------------------------------------
-def test_v_app_01_sql_injection_in_kyc_lookup(client):
+def test_v_app_01_fix_injection_payload_no_longer_leaks_rows(client):
     token = mint_token()
 
     baseline = client.get("/v1/verify/lookup", query_string={"bvn": "00000000000"}, headers=auth_header(token))
@@ -144,11 +146,10 @@ def test_v_app_01_sql_injection_in_kyc_lookup(client):
         headers=auth_header(token),
     )
     assert injected.status_code == 200
-    rows = injected.get_json()
-    assert len(rows) > 0, "expected the injected OR clause to leak every kyc_records row"
-    # Confirms this is a genuine data leak, not an empty-but-200 response: real
-    # BVNs/NINs belonging to other users come back.
-    assert any(r.get("bvn") and r["bvn"] != "00000000000" for r in rows)
+    assert injected.get_json() == [], (
+        "expected the injection payload to be treated as a literal BVN with "
+        "no matching rows, not as SQL"
+    )
 
 
 # --------------------------------------------------------------------------

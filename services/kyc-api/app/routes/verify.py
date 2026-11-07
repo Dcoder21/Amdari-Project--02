@@ -39,7 +39,8 @@ def verify_bvn():
 def lookup_kyc():
     """Look up a KYC record by BVN or NIN.
 
-    SQLi variant in the kyc-api service. Same root cause as V-APP-01.
+    Fix for V-APP-01 (kyc-api variant): the filter value is now bound as a
+    query parameter instead of interpolated into the SQL string.
     """
     bvn = request.args.get("bvn", "")
     nin = request.args.get("nin", "")
@@ -48,13 +49,15 @@ def lookup_kyc():
     cur = conn.cursor()
     try:
         if bvn:
-            query = f"SELECT * FROM kyc_records WHERE bvn = '{bvn}'"
+            query = "SELECT * FROM kyc_records WHERE bvn = %s"
+            params = (bvn,)
         elif nin:
-            query = f"SELECT * FROM kyc_records WHERE nin = '{nin}'"
+            query = "SELECT * FROM kyc_records WHERE nin = %s"
+            params = (nin,)
         else:
             return jsonify({"error": "bvn or nin required"}), 400
 
-        cur.execute(query)
+        cur.execute(query, params)
         records = cur.fetchall()
         return jsonify([dict(r) for r in records])
     finally:
