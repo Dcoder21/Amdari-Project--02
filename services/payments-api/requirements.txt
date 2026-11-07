@@ -1,5 +1,6 @@
 flask==2.0.1
-psycopg2-binary==2.9.1
+werkzeug==2.0.3
+psycopg2-binary==2.9.9
 redis==4.3.4
 pyjwt==1.7.1
 requests==2.25.1

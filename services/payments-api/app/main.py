@@ -1,6 +1,8 @@
 """SentinelPay Payments API — main entrypoint."""
 import os
+from decimal import Decimal
 from flask import Flask, jsonify
+from flask.json import JSONEncoder
 
 from app.routes.auth import auth_bp
 from app.routes.accounts import accounts_bp
@@ -10,8 +12,22 @@ from app.routes.webhooks import webhooks_bp
 from app.routes.admin import admin_bp
 
 
+class DecimalJSONEncoder(JSONEncoder):
+    """Environment-compatibility note (not a security fix): NUMERIC columns
+    come back from psycopg2 as Decimal, which Flask 2.0's default encoder
+    cannot serialise. Without this every route that returns a balance
+    crashes with a 500, regardless of any vulnerability. Route logic and
+    authorisation are untouched."""
+
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
+
 def create_app():
     app = Flask(__name__)
+    app.json_encoder = DecimalJSONEncoder
     app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
     app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
 

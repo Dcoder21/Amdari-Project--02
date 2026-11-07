@@ -32,7 +32,12 @@ def issue_token(user_id: int, role: str) -> str:
     V-APP-02 (part 1): HS256 with a low-entropy, repository-committed secret.
     """
     payload = {"user_id": user_id, "role": role}
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    # Environment-compatibility note (not a security fix): PyJWT 1.7.1's
+    # encode() returns bytes, which jsonify() cannot serialise. Decoding to
+    # str here only makes the app runnable; decode_token's broken signature
+    # verification (V-APP-02) is left exactly as inherited.
+    return token.decode("utf-8") if isinstance(token, bytes) else token
 
 
 def decode_token(token: str) -> dict:

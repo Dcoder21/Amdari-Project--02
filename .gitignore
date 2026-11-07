@@ -11,3 +11,5 @@ venv/
 htmlcov/
 node_modules/
 *.log
+evidence/week1/scans/*.json
+docker-compose.override.yml
