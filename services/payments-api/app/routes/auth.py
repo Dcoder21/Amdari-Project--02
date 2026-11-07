@@ -13,12 +13,16 @@ def register():
 
     V-APP-08: No rate limiting. Anyone can hammer this endpoint to enumerate
     existing emails (via the unique-constraint error response).
+
+    Fix for V-APP-07: role is no longer client-supplied. Public self-service
+    registration always creates a 'merchant' account; privileged roles
+    (admin, finance) are provisioned out-of-band, not through this endpoint.
     """
     data = request.get_json() or {}
     email = data.get("email")
     password = data.get("password")
     full_name = data.get("full_name", "")
-    role = data.get("role", "merchant")  # V-APP-07: client can self-assign role
+    role = "merchant"
 
     if not email or not password:
         return jsonify({"error": "email and password required"}), 400

@@ -75,14 +75,18 @@ def auth_header(token):
 
 def login_seeded_owner(client):
     """Return a token that can act on SEEDED_ACCOUNT_ID as if it were the
-    real owner (merchant1@example.com). The seeded users' passwords aren't
-    known plaintext, so this uses an admin-role token instead — admin
+    real owner (merchant1@example.com). The seeded merchant users' plaintext
+    passwords aren't known, so this logs in as the seeded admin account
+    (admin@sentinelpay.io / password123, see seed/init.sql) instead — admin
     bypasses the ownership check by design (see app/routes/accounts.py).
-    Pending V-APP-07's fix, self-assigned role='admin' at registration still
-    works; this is test-only use of that bug to drive setup, not a claim
-    it's safe."""
-    _, admin_token = register_and_login(client, role="admin")
-    return admin_token
+    Now that V-APP-07 is fixed, self-assigned role='admin' at registration
+    no longer works, so this is a real admin login, not a workaround."""
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "admin@sentinelpay.io", "password": "password123"},
+    )
+    assert login.status_code == 200, login.get_json()
+    return login.get_json()["token"]
 
 
 # --------------------------------------------------------------------------
@@ -385,17 +389,37 @@ def test_v_app_06_passwords_are_unsalted_md5():
 
 
 # --------------------------------------------------------------------------
-# V-APP-07 — mass assignment / self-assigned role
+# V-APP-07 — FIXED: role is no longer client-supplied at registration, and
+# update_profile now enforces ownership plus a fixed column allow-list.
+# See app/routes/auth.py and app/routes/accounts.py.
 # --------------------------------------------------------------------------
-def test_v_app_07_register_with_self_assigned_admin_role(client):
-    _, token = register_and_login(client, role="admin")
+def test_v_app_07_fix_register_ignores_client_supplied_role(client):
+    """A registration payload requesting role='admin' must now silently
+    become 'merchant' — and that account must not be authorised as admin."""
+    reg = client.post(
+        "/v1/auth/register",
+        json={
+            "email": f"{uuid.uuid4().hex}@example.com",
+            "password": "Test#Pass123",
+            "full_name": "Test User",
+            "role": "admin",
+        },
+    )
+    assert reg.status_code == 201, reg.get_json()
+    assert reg.get_json()["role"] == "merchant"
+
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": reg.get_json()["email"], "password": "Test#Pass123"},
+    )
+    token = login.get_json()["token"]
     resp = client.get("/v1/admin/users", headers=auth_header(token))
-    assert resp.status_code == 200, "self-registered 'admin' role was accepted and authorised"
+    assert resp.status_code == 403, "self-requested 'admin' role must not be authorised"
 
 
-def test_v_app_07_mass_assignment_transfers_account_ownership(client):
-    """update_profile binds every client-supplied field, including user_id,
-    letting an attacker transfer someone else's account to themselves."""
+def test_v_app_07_fix_mass_assignment_no_longer_transfers_ownership(client):
+    """update_profile must reject unknown/dangerous fields like user_id,
+    instead of writing whatever the client sends."""
     attacker_id, attacker_token = register_and_login(client)
 
     resp = client.put(
@@ -403,8 +427,43 @@ def test_v_app_07_mass_assignment_transfers_account_ownership(client):
         json={"user_id": attacker_id},
         headers=auth_header(attacker_token),
     )
+    assert resp.status_code == 400
+
+
+def test_v_app_07_fix_update_profile_requires_ownership(client):
+    """Even for an allow-listed field, an unrelated caller must not be able
+    to update someone else's account."""
+    _, attacker_token = register_and_login(client)
+
+    resp = client.put(
+        f"/v1/accounts/{OWNERSHIP_TRANSFER_TARGET_ID}/profile",
+        json={"currency": "USD"},
+        headers=auth_header(attacker_token),
+    )
+    assert resp.status_code == 403
+
+
+def test_v_app_07_fix_owner_can_still_update_allowed_profile_field(client):
+    """Confirms the fix didn't just break legitimate profile updates: the
+    real owner (via admin, since the seeded merchant password is unknown)
+    can still update the allow-listed 'currency' field."""
+    admin_token = login_seeded_owner(client)
+
+    resp = client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "USD"},
+        headers=auth_header(admin_token),
+    )
     assert resp.status_code == 200, resp.get_json()
-    assert resp.get_json()["user_id"] == attacker_id
+    assert resp.get_json()["currency"] == "USD"
+
+    # restore, so other tests relying on SEEDED_ACCOUNT_ID's original
+    # currency aren't affected by this test's side effect
+    client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "NGN"},
+        headers=auth_header(admin_token),
+    )
 
 
 # --------------------------------------------------------------------------
