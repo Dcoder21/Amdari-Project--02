@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
 from app.auth import require_auth
+from app.audit import log_event
 
 accounts_bp = Blueprint("accounts", __name__)
 
@@ -95,6 +96,8 @@ def update_profile(account_id):
         cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
         updated = cur.fetchone()
         conn.commit()
+
+        log_event(request.current_user_id, "account.profile_update", "account", account_id, dict(data))
         return jsonify(dict(updated))
     finally:
         cur.close()

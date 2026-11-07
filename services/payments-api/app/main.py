@@ -10,6 +10,7 @@ from app.routes.transactions import transactions_bp
 from app.routes.wallets import wallets_bp
 from app.routes.webhooks import webhooks_bp
 from app.routes.admin import admin_bp
+from app.audit import ensure_audit_table
 
 
 class DecimalJSONEncoder(JSONEncoder):
@@ -30,6 +31,10 @@ def create_app():
     app.json_encoder = DecimalJSONEncoder
     app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
     app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
+
+    # Fix for V-APP-11: ensure the audit_log table exists even against an
+    # already-initialised database volume, not just a fresh install.
+    ensure_audit_table()
 
     app.register_blueprint(auth_bp, url_prefix="/v1/auth")
     app.register_blueprint(accounts_bp, url_prefix="/v1/accounts")

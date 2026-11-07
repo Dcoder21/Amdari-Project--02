@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS webhooks (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
+-- Fix for V-APP-11: audit log for money movement and other sensitive
+-- operations. Also created defensively at app startup (app/audit.py) so
+-- this applies to an already-initialised volume, not just a fresh install.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              SERIAL PRIMARY KEY,
+    actor_user_id   INTEGER,
+    action          VARCHAR(100) NOT NULL,
+    resource_type   VARCHAR(50) NOT NULL,
+    resource_id     VARCHAR(100),
+    metadata        JSONB,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
 -- Seed users (passwords are MD5 of "password123", "admin2024", "merchant1")
 INSERT INTO users (email, password_hash, full_name, role) VALUES
     ('admin@sentinelpay.io', '482c811da5d5b4bc6d497ffa98491e38', 'Adaeze Okonkwo', 'admin'),
