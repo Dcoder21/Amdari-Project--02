@@ -23,21 +23,32 @@ CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 VERIFY_SCRIPT = REPO_ROOT / "scripts" / "verify_image_signature.sh"
 
 
+def _non_comment_text() -> str:
+    """Strips full-line and trailing '#' comments so a step merely
+    mentioning a tool's name in passing (e.g. documenting that it's
+    missing) doesn't satisfy these checks."""
+    lines = []
+    for line in CI_YML.read_text().splitlines():
+        stripped = line.split("#", 1)[0]
+        lines.append(stripped)
+    return "\n".join(lines)
+
+
 def test_build_and_push_signs_the_image_with_cosign():
-    text = CI_YML.read_text()
+    text = _non_comment_text()
     assert "sigstore/cosign-installer" in text, "expected cosign to be installed in the pipeline"
     assert "cosign sign" in text, "expected an image to actually be signed, not just cosign installed"
 
 
 def test_build_and_push_requests_an_oidc_token_for_keyless_signing():
-    text = CI_YML.read_text()
+    text = _non_comment_text()
     assert "id-token: write" in text, (
         "keyless cosign signing requires requesting the job's OIDC identity token"
     )
 
 
 def test_a_verification_step_fails_closed_before_deploy():
-    text = CI_YML.read_text()
+    text = _non_comment_text()
     assert "verify_image_signature.sh" in text, (
         "expected a signature verification step gating the pipeline (ideally before deploy)"
     )
