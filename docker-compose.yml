@@ -28,7 +28,12 @@ services:
     environment:
       DATABASE_URL: postgresql://sentinel:sentinel123@postgres:5432/sentinelpay
       REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: sentinelpay-dev-secret-do-not-use-in-prod
+      # V-APP-02 fix: RS256 keypair, not a shared HS256 secret. payments-api
+      # gets both halves because it's the only service that issues tokens.
+      # Generated locally by scripts/generate_dev_jwt_keys.sh into a
+      # git-ignored .env; docker compose substitutes these automatically.
+      JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64}
+      JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64}
       AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
       AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
       AWS_REGION: af-south-1
@@ -47,7 +52,9 @@ services:
     environment:
       DATABASE_URL: postgresql://sentinel:sentinel123@postgres:5432/sentinelpay
       REDIS_URL: redis://redis:6379/1
-      JWT_SECRET: sentinelpay-dev-secret-do-not-use-in-prod
+      # V-APP-02 fix: kyc-api gets only the public key — it verifies tokens
+      # payments-api issued, but holds nothing capable of signing one.
+      JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64}
       AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
       AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
       AWS_REGION: af-south-1
