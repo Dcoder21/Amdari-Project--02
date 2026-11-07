@@ -324,19 +324,17 @@ def test_v_app_03_fix_owner_can_still_read_own_transaction(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-05 — wallet race condition
+# V-APP-05 — FIXED: debit/credit now take a row lock (SELECT ... FOR UPDATE)
+# so concurrent operations against the same account serialise instead of
+# racing. See app/routes/wallets.py.
 # --------------------------------------------------------------------------
-def test_v_app_05_concurrent_debits_overdraw_the_account(client):
-    """Fire N concurrent debits, each individually affordable only once.
-    With no row lock, more of them succeed than the pre-debit balance
-    should allow."""
+def test_v_app_05_fix_concurrent_debits_no_longer_overdraw_the_account(client):
+    """Fire N concurrent debits, each individually affordable only once. The
+    row lock must now serialise them: at most 2 can succeed against a
+    balance that only covers 2, and the account must never go negative."""
     app = create_app()
     app.config["TESTING"] = True
 
-    # Use a freshly-topped-up account via credit so this test doesn't depend
-    # on the exact seeded balance remaining untouched by other tests. Must be
-    # the real account owner now that V-APP-03 enforces ownership on wallet
-    # operations.
     seed_client = app.test_client()
     actor_token = login_seeded_owner(seed_client)
     topped_up = Decimal("1000.00")
@@ -365,16 +363,15 @@ def test_v_app_05_concurrent_debits_overdraw_the_account(client):
         results = list(pool.map(fire_debit, range(concurrency)))
 
     successes = sum(1 for s in results if s == 200)
+    insufficient_funds = sum(1 for s in results if s == 400)
     balance_after = Decimal(
         seed_client.get(f"/v1/accounts/{SEEDED_ACCOUNT_ID}", headers=auth_header(actor_token)).get_json()["balance"]
     )
-    expected_if_serialised = balance_before - (2 * debit_amount)
 
-    assert successes > 2 or balance_after < 0 or balance_after != expected_if_serialised, (
-        f"expected the race to allow more than 2 of {concurrency} concurrent debits of "
-        f"{debit_amount} against a balance of {balance_before}, or to overdraw the account. "
-        f"Got successes={successes}, balance_after={balance_after}"
-    )
+    assert successes == 2, f"expected exactly 2 of {concurrency} debits to succeed, got {successes}"
+    assert insufficient_funds == concurrency - 2
+    assert balance_after >= 0
+    assert balance_after == balance_before - (2 * debit_amount)
 
 
 # --------------------------------------------------------------------------
