@@ -17,13 +17,28 @@ import os
 import pickle
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 
 from app.main import create_app
 from app.auth import hash_password
+from tests.conftest import get_test_private_key_pem
+
+
+def _generate_attacker_rsa_key() -> bytes:
+    """A key the attacker generated themselves — structurally valid RS256,
+    just not the one payments-api actually trusts."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
 
 SEEDED_ACCOUNT_ID = 3          # merchant1@example.com — read/debit/credit tests
 OWNERSHIP_TRANSFER_TARGET_ID = 4  # merchant2@example.com — kept separate so the
@@ -86,31 +101,92 @@ def test_v_app_01_sql_injection_in_transaction_search(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-02 — broken JWT validation (signature never verified)
+# V-APP-02 — FIXED: RS256, signature always verified, algorithm pinned.
+# These are now regression tests: each exploit that used to pass must now
+# be rejected with 401. See services/payments-api/app/auth.py.
 # --------------------------------------------------------------------------
-def test_v_app_02_forged_admin_token_grants_admin_access(client):
-    """A token signed with a secret the server never checks still grants
-    admin access, because decode_token() calls verify_signature=False."""
+def test_v_app_02_fix_forged_hs256_token_is_rejected(client):
+    """A token signed with an attacker-chosen HS256 secret — the original
+    exploit — must now be rejected, since decode_token only accepts RS256."""
     forged = jwt.encode(
         {"user_id": 1, "role": "admin"},
-        "attacker-does-not-know-the-real-secret",
+        "attacker-does-not-know-anything-useful",
         algorithm="HS256",
     )
-    if isinstance(forged, bytes):
-        forged = forged.decode()
-
     resp = client.get("/v1/admin/users", headers=auth_header(forged))
-    assert resp.status_code == 200
-    emails = {u["email"] for u in resp.get_json()}
-    assert "admin@sentinelpay.io" in emails
+    assert resp.status_code == 401
 
 
-def test_v_app_02_none_algorithm_token_is_accepted(client):
-    """alg:none tokens (no signature at all) are also accepted."""
+def test_v_app_02_fix_none_algorithm_token_is_rejected(client):
+    """alg:none tokens must now be rejected."""
     unsigned = jwt.encode({"user_id": 1, "role": "admin"}, key=None, algorithm="none")
-    if isinstance(unsigned, bytes):
-        unsigned = unsigned.decode()
     resp = client.get("/v1/admin/users", headers=auth_header(unsigned))
+    assert resp.status_code == 401
+
+
+def test_v_app_02_fix_token_signed_with_wrong_rsa_key_is_rejected(client):
+    """Even a well-formed RS256 token, correctly structured, fails if it
+    wasn't signed with the real private key."""
+    attacker_private_key = _generate_attacker_rsa_key()
+    forged = jwt.encode(
+        {
+            "user_id": 1,
+            "role": "admin",
+            "iss": "sentinelpay-payments-api",
+            "aud": "sentinelpay-services",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=15),
+        },
+        attacker_private_key,
+        algorithm="RS256",
+    )
+    resp = client.get("/v1/admin/users", headers=auth_header(forged))
+    assert resp.status_code == 401
+
+
+def test_v_app_02_fix_expired_token_is_rejected(client):
+    from app.auth import ISSUER, AUDIENCE
+
+    expired = jwt.encode(
+        {
+            "user_id": 1,
+            "role": "admin",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "iat": datetime.now(tz=timezone.utc) - timedelta(minutes=30),
+            "exp": datetime.now(tz=timezone.utc) - timedelta(minutes=15),
+        },
+        get_test_private_key_pem(),
+        algorithm="RS256",
+    )
+    resp = client.get("/v1/admin/users", headers=auth_header(expired))
+    assert resp.status_code == 401
+
+
+def test_v_app_02_fix_wrong_audience_is_rejected(client):
+    from app.auth import ISSUER
+
+    wrong_audience = jwt.encode(
+        {
+            "user_id": 1,
+            "role": "admin",
+            "iss": ISSUER,
+            "aud": "some-other-service",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=15),
+        },
+        get_test_private_key_pem(),
+        algorithm="RS256",
+    )
+    resp = client.get("/v1/admin/users", headers=auth_header(wrong_audience))
+    assert resp.status_code == 401
+
+
+def test_v_app_02_fix_legitimate_login_flow_still_works(client):
+    """The fix doesn't just reject forgeries — real users can still log in
+    and use their token end-to-end."""
+    _, token = register_and_login(client)
+    resp = client.get("/v1/accounts/", headers=auth_header(token))
     assert resp.status_code == 200
 
 
