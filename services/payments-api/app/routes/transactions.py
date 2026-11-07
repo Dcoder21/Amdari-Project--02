@@ -49,18 +49,29 @@ def search_transactions():
 @transactions_bp.route("/<reference>", methods=["GET"])
 @require_auth
 def get_transaction(reference):
-    """Fetch a single transaction by reference."""
+    """Fetch a single transaction by reference.
+
+    Fix for V-APP-03: ownership (via the transaction's account, or admin
+    role) is now required — previously any authenticated caller could fetch
+    any transaction by guessing its reference.
+    """
     conn = get_connection()
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT * FROM transactions WHERE reference = %s",
+            "SELECT t.*, a.user_id AS account_user_id "
+            "FROM transactions t JOIN accounts a ON a.id = t.account_id "
+            "WHERE t.reference = %s",
             (reference,)
         )
         txn = cur.fetchone()
         if not txn:
             return jsonify({"error": "transaction not found"}), 404
-        return jsonify(dict(txn))
+        txn = dict(txn)
+        account_user_id = txn.pop("account_user_id")
+        if account_user_id != request.current_user_id and request.current_user_role != "admin":
+            return jsonify({"error": "forbidden"}), 403
+        return jsonify(txn)
     finally:
         cur.close()
         conn.close()

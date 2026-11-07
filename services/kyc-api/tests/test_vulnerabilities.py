@@ -178,9 +178,10 @@ def test_v_app_04_ssrf_via_bvn_provider(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-03 (variant) — IDOR on KYC documents
+# V-APP-03 (variant) — FIXED: ownership (via the users/<id>/ key prefix, or
+# admin role) is now enforced. See app/routes/documents.py.
 # --------------------------------------------------------------------------
-def test_v_app_03_idor_reads_another_users_document(client, s3_bucket):
+def test_v_app_03_fix_unrelated_user_cannot_read_document(client, s3_bucket):
     victim_token = mint_token(user_id=101)
     attacker_token = mint_token(user_id=202)
 
@@ -194,11 +195,28 @@ def test_v_app_03_idor_reads_another_users_document(client, s3_bucket):
     key = upload.get_json()["key"]
     assert key.startswith("users/101/")
 
-    # The attacker only has to guess/know the predictable users/<id>/<filename>
-    # key; there is no check that the caller owns the document.
+    # The attacker knows the predictable users/<id>/<filename> key but must
+    # now be rejected — they don't own it.
     fetch = client.get(f"/v1/documents/{key}", headers=auth_header(attacker_token))
+    assert fetch.status_code == 403
+
+
+def test_v_app_03_fix_owner_can_still_read_own_document(client, s3_bucket):
+    """Confirms the fix didn't just lock everyone out: the uploader can
+    still read their own document."""
+    owner_token = mint_token(user_id=303)
+
+    upload = client.post(
+        "/v1/documents/upload",
+        data={"file": (io.BytesIO(b"my own passport bytes"), "passport.jpg")},
+        content_type="multipart/form-data",
+        headers=auth_header(owner_token),
+    )
+    key = upload.get_json()["key"]
+
+    fetch = client.get(f"/v1/documents/{key}", headers=auth_header(owner_token))
     assert fetch.status_code == 200
-    assert fetch.data == b"victim passport bytes"
+    assert fetch.data == b"my own passport bytes"
 
 
 def test_kyc_upload_sets_public_read_acl(client, s3_bucket):

@@ -53,8 +53,13 @@ def upload_document():
 def get_document(key):
     """Fetch a previously uploaded document.
 
-    No ownership check on the key. Identical pattern to V-APP-03 IDOR.
+    Fix for V-APP-03: the key is namespaced as users/<user_id>/..., so
+    ownership (or admin role) can be enforced by checking that prefix —
+    previously any authenticated caller could fetch any other user's
+    document by guessing or enumerating keys.
     """
+    if request.current_user_role != "admin" and not key.startswith(f"users/{request.current_user_id}/"):
+        return jsonify({"error": "forbidden"}), 403
     try:
         obj = _s3().get_object(Bucket=KYC_BUCKET, Key=key)
         return obj["Body"].read(), 200, {"Content-Type": obj.get("ContentType", "application/octet-stream")}
