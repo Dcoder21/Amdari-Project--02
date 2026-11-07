@@ -1,9 +1,10 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: sentinelpay-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       POSTGRES_USER: sentinel
       # Fix for V-CLD-04: no hardcoded password. Set POSTGRES_PASSWORD (and
@@ -20,12 +21,20 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sentinelpay-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "6379:6379"
 
   payments-api:
     build: ./services/payments-api
     container_name: sentinelpay-payments
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "8001:8001"
     environment:
@@ -53,6 +62,11 @@ services:
   kyc-api:
     build: ./services/kyc-api
     container_name: sentinelpay-kyc
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "8002:8002"
     environment:
