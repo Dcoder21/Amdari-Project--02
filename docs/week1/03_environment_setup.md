@@ -71,10 +71,30 @@ the `users/<id>/` prefix the way it would on a real filesystem. The test and
 impact is unsanitised, unbounded nested keys and silent same-key overwrite
 with no collision check.
 
+## `.github/workflows/ci.yml` — reconstructed
+
+Confirmed absent from both the fork and the upstream repo, despite the
+README, `docs/VULN_INDEX.md` and `docs/ARCHITECTURE_NOTES.md` all referring
+to it directly and attributing V-PIP-01 to 03 to it. Rather than block Week 3
+on sourcing an original that may not exist, `.github/workflows/ci.yml` was
+reconstructed to reproduce exactly the three defects the case study
+describes (unsigned image push, no SBOM, long-lived admin-equivalent AWS
+keys instead of OIDC) plus the detail from `ARCHITECTURE_NOTES.md` that a
+failing test doesn't fail the build (`continue-on-error: true`). The file
+carries a header comment marking it as a reconstruction and naming the
+assumption, per the repo's own rule to document assumptions. If Amdari
+supplies the real original later, it replaces this file and the note comes
+out.
+
+V-PIP-04 (no branch protection) needed no reconstruction — it's a live
+repository setting, confirmed directly:
+
+```
+$ gh api repos/sadorect/Amdari-Project--02/branches/main/protection
+{"message":"Branch not protected", ...}
+```
+
 ## Still outstanding
 
-- `.github/workflows/ci.yml` does not exist in the fork (confirmed absent
-  upstream too). V-PIP-01–03 branches exist but can't be evidenced
-  before/after until this is obtained or reconstructed.
 - V-APP-11 (audit logging) has no automated exploit test — see the skip
   reason in `payments-api/tests/test_vulnerabilities.py`.

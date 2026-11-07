@@ -1,0 +1,121 @@
+# RECONSTRUCTED FILE — see docs/week1/03_environment_setup.md and the note
+# below. This file does not exist in the upstream repo (Dcoder21/Amdari-
+# Project--02) or in this fork as inherited, even though the README,
+# docs/VULN_INDEX.md and docs/ARCHITECTURE_NOTES.md all refer to it as the
+# "current (inadequate) CI pipeline" and attribute V-PIP-01 through V-PIP-03
+# to it directly. Rather than block Week 3 on sourcing the original, this
+# reconstructs the minimal workflow that produces exactly the three defects
+# the case study and vulnerability index describe, so there is still a
+# genuine "before" to fix against:
+#
+#   V-PIP-01 — images are built and pushed with no Cosign signature.
+#   V-PIP-02 — no SBOM is generated for any build.
+#   V-PIP-03 — the deploy job authenticates with a long-lived AWS access key
+#              pair (GitHub secrets, not OIDC) belonging to an IAM user that
+#              — per the case study's cloud-layer findings — has
+#              AdministratorAccess. That permission lives on the IAM side,
+#              not in this file; nothing here can "show" it beyond the fact
+#              that a static key pair is used at all instead of a scoped,
+#              short-lived federated credential.
+#
+# docs/ARCHITECTURE_NOTES.md also states plainly: "The CI workflow ...
+# doesn't even fail on a failing test." That is reproduced below via
+# `continue-on-error: true` on the test step.
+#
+# V-PIP-04 (no branch protection on main) is a repository setting, not
+# something expressible in this file — tracked separately against the
+# fork's branch protection configuration.
+#
+# This reconstruction is itself an assumption, documented per the
+# repository's own rule 4 ("document every assumption"). If the programme
+# supplies the actual original file, it replaces this one and this note is
+# removed.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  AWS_REGION: af-south-1
+  ECR_REGISTRY: 123456789012.dkr.ecr.af-south-1.amazonaws.com
+
+jobs:
+  test:
+    name: test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [payments-api, kyc-api]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r services/${{ matrix.service }}/requirements.txt
+
+      - name: Run tests
+        working-directory: services/${{ matrix.service }}
+        # V-PIP context: a failing test does not fail the job or block the
+        # build below — the pipeline reports green regardless.
+        continue-on-error: true
+        run: pytest tests/ -v
+
+  build-and-push:
+    name: build-and-push (${{ matrix.service }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [payments-api, kyc-api]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # V-PIP-03: long-lived static keys from an IAM user with
+          # AdministratorAccess, not a scoped OIDC-federated role.
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        working-directory: services/${{ matrix.service }}
+        run: docker build -t ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest .
+
+      - name: Push image
+        # V-PIP-01: pushed straight from `docker build`, no cosign sign step.
+        # V-PIP-02: no SBOM (e.g. Syft) is generated or attached anywhere
+        # in this job.
+        run: docker push ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest
+
+  deploy:
+    name: deploy (${{ matrix.service }})
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        service: [payments-api, kyc-api]
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Force new ECS deployment
+        run: >
+          aws ecs update-service --cluster sentinelpay --force-new-deployment
+          --service ${{ matrix.service }}
