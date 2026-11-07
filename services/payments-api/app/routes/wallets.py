@@ -27,7 +27,10 @@ def credit_wallet(account_id):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s", (account_id,))
+        # FOR UPDATE locks the row for the rest of this transaction, so a
+        # concurrent credit/debit against the same account blocks here
+        # until this one commits — closing the same race V-APP-05 fixes.
+        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s FOR UPDATE", (account_id,))
         row = cur.fetchone()
         if not row:
             return jsonify({"error": "account not found"}), 404
@@ -56,11 +59,12 @@ def credit_wallet(account_id):
 def debit_wallet(account_id):
     """Debit funds from a wallet.
 
-    V-APP-05: Race condition. The read of the current balance and the write
-    of the new balance happen in separate statements with no row lock and no
-    transactional boundary, so two concurrent debits can both observe the
-    same pre-balance and each succeed — allowing the account to be debited
-    below zero, or beyond the available funds.
+    Fix for V-APP-05: the balance read now takes a row lock (SELECT ... FOR
+    UPDATE), so a concurrent debit/credit against the same account blocks
+    until this transaction commits — the read-check-write is no longer
+    split across an unprotected window. Previously two concurrent debits
+    could both observe the same pre-balance and each succeed, debiting the
+    account below zero or beyond available funds.
 
     V-APP-11: No audit log. Money movement is the most sensitive operation
     in the platform, and there is no structured log of who debited what,
@@ -80,8 +84,8 @@ def debit_wallet(account_id):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        # Read balance (no lock)
-        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s", (account_id,))
+        # FOR UPDATE locks the row for the rest of this transaction.
+        cur.execute("SELECT user_id, balance FROM accounts WHERE id = %s FOR UPDATE", (account_id,))
         row = cur.fetchone()
         if not row:
             return jsonify({"error": "account not found"}), 404
@@ -92,10 +96,7 @@ def debit_wallet(account_id):
         if current_balance < amount:
             return jsonify({"error": "insufficient funds"}), 400
 
-        # Compute new balance in application memory
         new_balance = current_balance - amount
-
-        # Write back — two concurrent debits race here.
         cur.execute("UPDATE accounts SET balance = %s WHERE id = %s", (new_balance, account_id))
 
         reference = f"TXN-{uuid.uuid4().hex[:12].upper()}"
