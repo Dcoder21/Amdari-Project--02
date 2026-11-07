@@ -8,7 +8,6 @@ from app.routes.documents import documents_bp
 
 def create_app():
     app = Flask(__name__)
-    app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
 
     app.register_blueprint(verify_bp, url_prefix="/v1/verify")
     app.register_blueprint(documents_bp, url_prefix="/v1/documents")

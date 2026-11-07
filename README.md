@@ -48,7 +48,7 @@ docker compose exec payments-api python -m app.seed
 # The services are now available at:
 #   payments-api: http://localhost:8001
 #   kyc-api:      http://localhost:8002
-#   postgres:     localhost:5432  (user: sentinel, pass: sentinel123)
+#   postgres:     localhost:5432  (user: sentinel, pass: see your .env's POSTGRES_PASSWORD)
 #   redis:        localhost:6379
 ```
 
