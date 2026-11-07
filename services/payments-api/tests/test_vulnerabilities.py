@@ -543,10 +543,13 @@ def test_v_app_07_fix_owner_can_still_update_allowed_profile_field(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-08 — missing rate limiting
+# V-APP-08 — FIXED: login (per email), register (per IP) and OTP (per
+# phone) are now rate limited via Redis. See app/rate_limit.py and
+# app/routes/auth.py.
 # --------------------------------------------------------------------------
-def test_v_app_08_login_has_no_rate_limiting_or_lockout(client):
-    user_id, _ = register_and_login(client)
+def test_v_app_08_fix_login_is_rate_limited_per_email(client):
+    """Brute forcing a single account's password must now be cut off well
+    before 25 attempts."""
     email = f"probe-{uuid.uuid4().hex}@example.com"
     client.post("/v1/auth/register", json={"email": email, "password": "Correct#Pass1"})
 
@@ -555,8 +558,61 @@ def test_v_app_08_login_has_no_rate_limiting_or_lockout(client):
         resp = client.post("/v1/auth/login", json={"email": email, "password": "wrong-guess"})
         statuses.append(resp.status_code)
 
-    assert all(s == 401 for s in statuses), "expected every attempt to be evaluated (no 429/lockout seen)"
-    assert 429 not in statuses
+    assert 429 in statuses, "expected the brute-force attempt to be rate limited"
+    assert statuses.count(401) <= 5, "expected only the first few attempts to be evaluated before the limit kicked in"
+
+
+def test_v_app_08_fix_login_still_works_for_a_different_account(client):
+    """Confirms the per-email key doesn't accidentally lock out unrelated
+    accounts sharing the same source IP."""
+    _, token = register_and_login(client)
+    assert token
+
+
+def test_v_app_08_fix_register_is_rate_limited_per_ip(client):
+    """A flood of registrations from a single source IP must now be cut off.
+    Uses a distinct fake source IP (via environ_overrides) so this doesn't
+    interact with every other test's use of register_and_login on the
+    default test-client IP."""
+    fake_ip = "203.0.113.77"
+    statuses = []
+    for _ in range(60):
+        resp = client.post(
+            "/v1/auth/register",
+            json={"email": f"{uuid.uuid4().hex}@example.com", "password": "Test#Pass123"},
+            environ_overrides={"REMOTE_ADDR": fake_ip},
+        )
+        statuses.append(resp.status_code)
+
+    assert 429 in statuses, "expected the registration flood to be rate limited"
+
+
+def test_v_app_08_fix_otp_request_is_rate_limited_per_phone():
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    phone = f"+234{uuid.uuid4().int % 10**10:010d}"
+
+    statuses = []
+    for _ in range(10):
+        resp = client.post("/v1/auth/otp", json={"phone": phone})
+        statuses.append(resp.status_code)
+
+    assert 429 in statuses, "expected repeated OTP requests for the same phone to be rate limited"
+
+
+def test_v_app_08_fix_otp_code_is_not_logged(capfd):
+    """The old code printed the generated OTP to stdout; nothing should be
+    printed at all now."""
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.post("/v1/auth/otp", json={"phone": f"+234{uuid.uuid4().int % 10**10:010d}"})
+    assert resp.status_code == 200
+
+    captured = capfd.readouterr()
+    assert "OTP" not in captured.out
 
 
 # --------------------------------------------------------------------------
