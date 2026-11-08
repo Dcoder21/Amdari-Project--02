@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
-from app.auth import hash_password, verify_password, issue_token
+from app.auth import hash_password, verify_password, needs_rehash, issue_token
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -61,6 +61,15 @@ def login():
             return jsonify({"error": "invalid credentials"}), 401
         if not user["is_active"]:
             return jsonify({"error": "account suspended"}), 403
+
+        if needs_rehash(user["password_hash"]):
+            # Fix for V-APP-06: transparently upgrade a legacy MD5 hash to
+            # the new salted format now that we have the plaintext anyway.
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (hash_password(password), user["id"]),
+            )
+            conn.commit()
 
         token = issue_token(user["id"], user["role"])
         return jsonify({"token": token, "user_id": user["id"], "role": user["role"]})

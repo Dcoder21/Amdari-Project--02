@@ -26,7 +26,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
 from app.main import create_app
-from app.auth import hash_password
+from app.auth import hash_password, verify_password, needs_rehash
+from app.db import get_connection as get_db_connection
 from tests.conftest import get_test_private_key_pem
 
 
@@ -414,14 +415,53 @@ def test_v_app_04_fix_webhook_registration_accepts_public_callback_url(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-06 — weak password hashing
+# V-APP-06 — FIXED: salted PBKDF2-SHA256 instead of unsalted MD5, with
+# transparent upgrade of any still-legacy hash on next successful login.
+# See app/auth.py and app/routes/auth.py.
 # --------------------------------------------------------------------------
-def test_v_app_06_passwords_are_unsalted_md5():
+def test_v_app_06_fix_new_hashes_are_salted_pbkdf2_not_md5():
     import hashlib
 
-    assert hash_password("Test#Pass123") == hashlib.md5(b"Test#Pass123").hexdigest()
-    # No salt: identical passwords always hash identically.
-    assert hash_password("same-password") == hash_password("same-password")
+    h = hash_password("Test#Pass123")
+    assert h != hashlib.md5(b"Test#Pass123").hexdigest()
+    assert h.startswith("pbkdf2:")
+    # Salted: the same password hashes differently each time.
+    assert hash_password("same-password") != hash_password("same-password")
+
+
+def test_v_app_06_fix_verify_password_still_accepts_legacy_md5_hash():
+    """Accounts created before this fix (and the seed data) have a bare MD5
+    hash on disk; verify_password must still accept it so existing users
+    aren't locked out."""
+    import hashlib
+
+    legacy_hash = hashlib.md5(b"Test#Pass123").hexdigest()
+    assert verify_password("Test#Pass123", legacy_hash) is True
+    assert verify_password("wrong-password", legacy_hash) is False
+    assert needs_rehash(legacy_hash) is True
+
+
+def test_v_app_06_fix_login_transparently_upgrades_legacy_hash(client):
+    """A real login against the seeded admin account (still MD5 in
+    seed/init.sql) must succeed, and silently rewrite the stored hash to the
+    new format so a direct DB read no longer shows a crackable MD5 digest."""
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "admin@sentinelpay.io", "password": "password123"},
+    )
+    assert login.status_code == 200, login.get_json()
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT password_hash FROM users WHERE email = %s", ("admin@sentinelpay.io",))
+        stored_hash = cur.fetchone()["password_hash"]
+    finally:
+        cur.close()
+        conn.close()
+
+    assert not needs_rehash(stored_hash), "expected the legacy MD5 hash to have been upgraded on login"
+    assert verify_password("password123", stored_hash) is True
 
 
 # --------------------------------------------------------------------------
