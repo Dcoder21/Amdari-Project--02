@@ -24,7 +24,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-from moto import mock_s3
+from moto import mock_aws
 
 from app.main import create_app
 from app.auth import ISSUER, AUDIENCE
@@ -44,8 +44,11 @@ def client():
 @pytest.fixture
 def s3_bucket():
     """A moto-mocked S3 with the KYC bucket pre-created, standing in for the
-    real bucket until Week 2's Terraform provisions one."""
-    with mock_s3():
+    real bucket until Week 2's Terraform provisions one.
+
+    Fix for DEPS: moto 5.x replaced the per-service mock_s3() decorator with
+    a single mock_aws() covering every AWS service it mocks."""
+    with mock_aws():
         import boto3
 
         s3 = boto3.client(
