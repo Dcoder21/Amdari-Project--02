@@ -13,6 +13,7 @@ Run inside the payments-api container, where DATABASE_URL resolves the
 Requires requirements-dev.txt (pytest) installed in the image/container.
 """
 import base64
+import json
 import os
 import pickle
 import uuid
@@ -26,7 +27,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
 from app.main import create_app
-from app.auth import hash_password
+from app.auth import hash_password, verify_password, needs_rehash
+from app.db import get_connection as get_db_connection
 from tests.conftest import get_test_private_key_pem
 
 
@@ -375,14 +377,97 @@ def test_v_app_05_fix_concurrent_debits_no_longer_overdraw_the_account(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-06 — weak password hashing
+# V-APP-04 — FIXED: webhook registration and test-fire now validate the
+# target URL against private/loopback/link-local/reserved destinations
+# before storing or fetching it. See app/routes/webhooks.py and
+# app/ssrf_guard.py. No pre-existing exploit test existed for this service
+# (only kyc-api's BVN-provider variant was covered in Week 1), so this is
+# new regression-only coverage added alongside the fix.
 # --------------------------------------------------------------------------
-def test_v_app_06_passwords_are_unsalted_md5():
+def test_v_app_04_fix_webhook_test_blocks_cloud_metadata_address(client):
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/test",
+        json={"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_webhook_registration_rejects_internal_callback_url(client):
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/",
+        json={"callback_url": "http://127.0.0.1:8001/v1/admin/users"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_webhook_registration_accepts_public_callback_url(client):
+    """Confirms the fix didn't just break legitimate webhook registration."""
+    _, token = register_and_login(client)
+    resp = client.post(
+        "/v1/webhooks/",
+        json={"callback_url": "https://8.8.8.8/webhooks/incoming"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 201, resp.get_json()
+
+
+# --------------------------------------------------------------------------
+# V-APP-06 — FIXED: salted hashing (werkzeug's generate_password_hash;
+# scrypt as of werkzeug 3.1, previously pbkdf2:sha256 — either way, not
+# unsalted MD5) with transparent upgrade of any still-legacy hash on next
+# successful login. See app/auth.py and app/routes/auth.py.
+# --------------------------------------------------------------------------
+def test_v_app_06_fix_new_hashes_are_salted_not_md5():
     import hashlib
 
-    assert hash_password("Test#Pass123") == hashlib.md5(b"Test#Pass123").hexdigest()
-    # No salt: identical passwords always hash identically.
-    assert hash_password("same-password") == hash_password("same-password")
+    h = hash_password("Test#Pass123")
+    assert h != hashlib.md5(b"Test#Pass123").hexdigest()
+    assert not _is_bare_32_char_hex(h), "expected a salted, method-prefixed hash, not a bare MD5-shaped digest"
+    # Salted: the same password hashes differently each time.
+    assert hash_password("same-password") != hash_password("same-password")
+
+
+def _is_bare_32_char_hex(value: str) -> bool:
+    return len(value) == 32 and all(c in "0123456789abcdef" for c in value.lower())
+
+
+def test_v_app_06_fix_verify_password_still_accepts_legacy_md5_hash():
+    """Accounts created before this fix (and the seed data) have a bare MD5
+    hash on disk; verify_password must still accept it so existing users
+    aren't locked out."""
+    import hashlib
+
+    legacy_hash = hashlib.md5(b"Test#Pass123").hexdigest()
+    assert verify_password("Test#Pass123", legacy_hash) is True
+    assert verify_password("wrong-password", legacy_hash) is False
+    assert needs_rehash(legacy_hash) is True
+
+
+def test_v_app_06_fix_login_transparently_upgrades_legacy_hash(client):
+    """A real login against the seeded admin account (still MD5 in
+    seed/init.sql) must succeed, and silently rewrite the stored hash to the
+    new format so a direct DB read no longer shows a crackable MD5 digest."""
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "admin@sentinelpay.io", "password": "password123"},
+    )
+    assert login.status_code == 200, login.get_json()
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT password_hash FROM users WHERE email = %s", ("admin@sentinelpay.io",))
+        stored_hash = cur.fetchone()["password_hash"]
+    finally:
+        cur.close()
+        conn.close()
+
+    assert not needs_rehash(stored_hash), "expected the legacy MD5 hash to have been upgraded on login"
+    assert verify_password("password123", stored_hash) is True
 
 
 # --------------------------------------------------------------------------
@@ -464,10 +549,13 @@ def test_v_app_07_fix_owner_can_still_update_allowed_profile_field(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-08 — missing rate limiting
+# V-APP-08 — FIXED: login (per email), register (per IP) and OTP (per
+# phone) are now rate limited via Redis. See app/rate_limit.py and
+# app/routes/auth.py.
 # --------------------------------------------------------------------------
-def test_v_app_08_login_has_no_rate_limiting_or_lockout(client):
-    user_id, _ = register_and_login(client)
+def test_v_app_08_fix_login_is_rate_limited_per_email(client):
+    """Brute forcing a single account's password must now be cut off well
+    before 25 attempts."""
     email = f"probe-{uuid.uuid4().hex}@example.com"
     client.post("/v1/auth/register", json={"email": email, "password": "Correct#Pass1"})
 
@@ -476,14 +564,69 @@ def test_v_app_08_login_has_no_rate_limiting_or_lockout(client):
         resp = client.post("/v1/auth/login", json={"email": email, "password": "wrong-guess"})
         statuses.append(resp.status_code)
 
-    assert all(s == 401 for s in statuses), "expected every attempt to be evaluated (no 429/lockout seen)"
-    assert 429 not in statuses
+    assert 429 in statuses, "expected the brute-force attempt to be rate limited"
+    assert statuses.count(401) <= 5, "expected only the first few attempts to be evaluated before the limit kicked in"
+
+
+def test_v_app_08_fix_login_still_works_for_a_different_account(client):
+    """Confirms the per-email key doesn't accidentally lock out unrelated
+    accounts sharing the same source IP."""
+    _, token = register_and_login(client)
+    assert token
+
+
+def test_v_app_08_fix_register_is_rate_limited_per_ip(client):
+    """A flood of registrations from a single source IP must now be cut off.
+    Uses a distinct fake source IP (via environ_overrides) so this doesn't
+    interact with every other test's use of register_and_login on the
+    default test-client IP."""
+    fake_ip = "203.0.113.77"
+    statuses = []
+    for _ in range(60):
+        resp = client.post(
+            "/v1/auth/register",
+            json={"email": f"{uuid.uuid4().hex}@example.com", "password": "Test#Pass123"},
+            environ_overrides={"REMOTE_ADDR": fake_ip},
+        )
+        statuses.append(resp.status_code)
+
+    assert 429 in statuses, "expected the registration flood to be rate limited"
+
+
+def test_v_app_08_fix_otp_request_is_rate_limited_per_phone():
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    phone = f"+234{uuid.uuid4().int % 10**10:010d}"
+
+    statuses = []
+    for _ in range(10):
+        resp = client.post("/v1/auth/otp", json={"phone": phone})
+        statuses.append(resp.status_code)
+
+    assert 429 in statuses, "expected repeated OTP requests for the same phone to be rate limited"
+
+
+def test_v_app_08_fix_otp_code_is_not_logged(capfd):
+    """The old code printed the generated OTP to stdout; nothing should be
+    printed at all now."""
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.post("/v1/auth/otp", json={"phone": f"+234{uuid.uuid4().int % 10**10:010d}"})
+    assert resp.status_code == 200
+
+    captured = capfd.readouterr()
+    assert "OTP" not in captured.out
 
 
 # --------------------------------------------------------------------------
-# V-APP-09 — verbose error responses
+# V-APP-09 — FIXED: the global error handler now logs the traceback
+# server-side and returns a generic message, never the implementation
+# details. See app/main.py.
 # --------------------------------------------------------------------------
-def test_v_app_09_verbose_error_leaks_stack_trace(client):
+def test_v_app_09_fix_error_response_no_longer_leaks_stack_trace(client):
     _, token = register_and_login(client)
     resp = client.post(
         f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
@@ -492,13 +635,16 @@ def test_v_app_09_verbose_error_leaks_stack_trace(client):
     )
     assert resp.status_code == 500
     body = resp.get_json()
-    assert "trace" in body and "Traceback" in body["trace"]
+    assert body == {"error": "internal server error"}
 
 
 # --------------------------------------------------------------------------
-# V-APP-10 — insecure deserialisation (pickle RCE)
+# V-APP-10 — FIXED: the session blob is now parsed as JSON, not unpickled.
+# See app/routes/admin.py.
 # --------------------------------------------------------------------------
-def test_v_app_10_pickle_deserialisation_executes_arbitrary_code(client, tmp_path):
+def test_v_app_10_fix_pickle_payload_no_longer_executes(client):
+    """The same gadget that used to touch a marker file via pickle.loads()
+    must now fail to parse (it isn't valid JSON) instead of executing."""
     _, token = register_and_login(client)
     marker = f"/tmp/pwned_v_app_10_{uuid.uuid4().hex}"
     assert not os.path.exists(marker)
@@ -515,26 +661,115 @@ def test_v_app_10_pickle_deserialisation_executes_arbitrary_code(client, tmp_pat
     )
 
     try:
-        assert os.path.exists(marker), (
-            f"expected pickle.loads() to execute os.system() as a side effect; "
-            f"restore_session returned {resp.status_code} {resp.get_json()}"
-        )
+        assert not os.path.exists(marker), "pickle payload must no longer be executed"
+        assert resp.status_code == 400
     finally:
         if os.path.exists(marker):
             os.remove(marker)
 
 
-# --------------------------------------------------------------------------
-# V-APP-11 — missing audit logging
-# --------------------------------------------------------------------------
-@pytest.mark.skip(
-    reason=(
-        "V-APP-11: there is no structured audit logger to assert against yet. "
-        "Validated manually today by confirming `docker compose logs payments-api` "
-        "contains no structured entry for a debit. This test will be un-skipped and "
-        "rewritten against pytest's caplog once the fix PR introduces the audit "
-        "logger, asserting a log record with actor/action/object/outcome fields."
+def test_v_app_10_fix_legitimate_json_session_still_restores(client):
+    """Confirms the fix didn't just break the endpoint: a genuine JSON
+    session blob still round-trips."""
+    _, token = register_and_login(client)
+    session = {"user_id": 1, "role": "admin", "last_seen": "2026-01-01"}
+    blob = base64.b64encode(json.dumps(session).encode()).decode()
+
+    resp = client.post(
+        "/v1/admin/session/restore",
+        json={"session": blob},
+        headers=auth_header(token),
     )
-)
-def test_v_app_11_wallet_debit_emits_no_audit_log():
-    pass
+    assert resp.status_code == 200, resp.get_json()
+    assert sorted(resp.get_json()["session_keys"]) == sorted(session.keys())
+
+
+# --------------------------------------------------------------------------
+# V-APP-11 — FIXED: wallet credit/debit, profile updates, registration, and
+# webhook registration now write a structured audit_log row. See
+# app/audit.py and the routes that call log_event().
+# --------------------------------------------------------------------------
+def test_v_app_11_fix_wallet_debit_writes_audit_log_entry(client):
+    owner_token = login_seeded_owner(client)
+    client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
+        json={"amount": "50.00"},
+        headers=auth_header(owner_token),
+    )
+    debit = client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/debit",
+        json={"amount": "1.00", "counterparty": "audit-test", "description": "audit log coverage"},
+        headers=auth_header(owner_token),
+    )
+    reference = debit.get_json()["reference"]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT action, resource_type, resource_id, metadata FROM audit_log "
+            "WHERE action = 'wallet.debit' AND resource_id = %s ORDER BY id DESC LIMIT 1",
+            (str(SEEDED_ACCOUNT_ID),),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    assert row is not None, "expected a wallet.debit audit_log row for this account"
+    assert row["metadata"]["reference"] == reference
+
+
+def test_v_app_11_fix_profile_update_writes_audit_log_entry(client):
+    admin_token = login_seeded_owner(client)
+    client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "USD"},
+        headers=auth_header(admin_token),
+    )
+    client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "NGN"},
+        headers=auth_header(admin_token),
+    )
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT action FROM audit_log WHERE action = 'account.profile_update' "
+            "AND resource_id = %s",
+            (str(SEEDED_ACCOUNT_ID),),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    assert len(rows) >= 2, "expected an account.profile_update audit_log row per update"
+
+
+# --------------------------------------------------------------------------
+# V-CLD-04 — FIXED: no hardcoded secrets (DB password, AWS keys, JWT
+# secret) in app code. See app/db.py, app/main.py, docker-compose.yml,
+# .env.example, and the removal of scripts/legacy_deploy.sh.
+# --------------------------------------------------------------------------
+def test_v_cld_04_fix_get_connection_has_no_hardcoded_fallback():
+    """get_connection() must require DATABASE_URL rather than falling back
+    to a hardcoded connection string (which embedded a password)."""
+    from app.db import get_connection
+
+    original = os.environ.pop("DATABASE_URL", None)
+    try:
+        with pytest.raises(KeyError):
+            get_connection()
+    finally:
+        if original is not None:
+            os.environ["DATABASE_URL"] = original
+
+
+def test_v_cld_04_fix_no_hardcoded_jwt_secret_in_main_config():
+    """The dead app.config['JWT_SECRET'] fallback (leftover from the
+    pre-V-APP-02 HS256 scheme) must be gone, not just unused."""
+    app = create_app()
+    assert "JWT_SECRET" not in app.config

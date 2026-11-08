@@ -8,15 +8,22 @@
 # the case study and vulnerability index describe, so there is still a
 # genuine "before" to fix against:
 #
-#   V-PIP-01 — images are built and pushed with no Cosign signature.
-#   V-PIP-02 — no SBOM is generated for any build.
-#   V-PIP-03 — the deploy job authenticates with a long-lived AWS access key
-#              pair (GitHub secrets, not OIDC) belonging to an IAM user that
-#              — per the case study's cloud-layer findings — has
-#              AdministratorAccess. That permission lives on the IAM side,
-#              not in this file; nothing here can "show" it beyond the fact
-#              that a static key pair is used at all instead of a scoped,
-#              short-lived federated credential.
+#   V-PIP-01 (fixed) — build-and-push now signs every pushed image keylessly
+#     with cosign, using the OIDC identity token GitHub Actions issues this
+#     job. A new verify-signature job (and the deploy job) verify the
+#     signature and fail closed via scripts/verify_image_signature.sh
+#     before anything downstream trusts the image.
+#   V-PIP-02 (fixed) — build-and-push now generates a CycloneDX SBOM per
+#     image with Syft, attaches it to the image digest, signs the
+#     attachment with cosign, and uploads it as a workflow artifact — not
+#     just produced and discarded.
+#   V-PIP-03 (fixed) — build-and-push and deploy now authenticate to AWS
+#     via GitHub's OIDC provider (role-to-assume, permissions: id-token:
+#     write) instead of a long-lived access key pair from secrets. The
+#     deploy role itself (least-privilege, not AdministratorAccess) is
+#     provisioned in Week 2's Terraform; AWS_DEPLOY_ROLE_ARN below is its
+#     ARN, not a secret — OIDC trust makes the ARN alone useless without a
+#     matching GitHub Actions run to federate from.
 #
 # docs/ARCHITECTURE_NOTES.md also states plainly: "The CI workflow ...
 # doesn't even fail on a failing test." That is reproduced below via
@@ -42,6 +49,9 @@ on:
 env:
   AWS_REGION: af-south-1
   ECR_REGISTRY: 123456789012.dkr.ecr.af-south-1.amazonaws.com
+  # V-PIP-03 fix: the deploy role itself is created and scoped in Week 2's
+  # Terraform; this is its ARN, not a secret.
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::123456789012:role/sentinelpay-github-actions-deploy
 
 jobs:
   test:
@@ -71,19 +81,26 @@ jobs:
     name: build-and-push (${{ matrix.service }})
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      # id-token:write serves two fixes: this job's OIDC federation into
+      # AWS below (V-PIP-03), and the OIDC identity token cosign uses for
+      # keyless signing later in this same job (V-PIP-01) — no signing key
+      # and no long-lived AWS key to generate, store, or leak.
+      id-token: write
+      contents: read
     strategy:
       matrix:
         service: [payments-api, kyc-api]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # V-PIP-03: long-lived static keys from an IAM user with
-          # AdministratorAccess, not a scoped OIDC-federated role.
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Fix for V-PIP-03: federates via GitHub's OIDC token into a
+          # short-lived, least-privilege role instead of a long-lived
+          # access key pair from an IAM user with AdministratorAccess.
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
@@ -94,26 +111,89 @@ jobs:
         run: docker build -t ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest .
 
       - name: Push image
-        # V-PIP-01: pushed straight from `docker build`, no cosign sign step.
+        id: push
         # V-PIP-02: no SBOM (e.g. Syft) is generated or attached anywhere
         # in this job.
-        run: docker push ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest
+        run: |
+          docker push ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: deploy (${{ matrix.service }})
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
+        run: cosign sign --yes ${{ steps.push.outputs.digest }}
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (CycloneDX)
+        # Fix for V-PIP-02: a CycloneDX SBOM per build, attached to the
+        # image digest and signed — not just produced and discarded.
+        run: syft ${{ steps.push.outputs.digest }} -o cyclonedx-json=sbom-${{ matrix.service }}.cdx.json
+
+      - name: Attach and sign SBOM
+        run: |
+          cosign attach sbom --sbom sbom-${{ matrix.service }}.cdx.json --type cyclonedx ${{ steps.push.outputs.digest }}
+          cosign sign --yes --attachment sbom ${{ steps.push.outputs.digest }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.cdx.json
+
+  verify-signature:
+    name: verify-signature (${{ matrix.service }})
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     strategy:
       matrix:
         service: [payments-api, kyc-api]
     steps:
-      - name: Configure AWS credentials
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify image signature (fails closed)
+        # scripts/verify_image_signature.sh is the same check the deploy
+        # job below runs before it will touch ECS — this job surfaces a
+        # failure here too, on every push, not only on main.
+        run: |
+          chmod +x scripts/verify_image_signature.sh
+          scripts/verify_image_signature.sh ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest
+
+  deploy:
+    name: deploy (${{ matrix.service }})
+    needs: verify-signature
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      # Fix for V-PIP-03: same OIDC federation as build-and-push, not a
+      # long-lived key pair.
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        service: [payments-api, kyc-api]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify image signature before deploying (fails closed)
+        run: |
+          chmod +x scripts/verify_image_signature.sh
+          scripts/verify_image_signature.sh ${{ env.ECR_REGISTRY }}/sentinelpay-${{ matrix.service }}:latest
 
       - name: Force new ECS deployment
         run: >

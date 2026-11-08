@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
 from app.auth import require_auth
+from app.ssrf_guard import is_safe_external_url
 
 verify_bp = Blueprint("verify", __name__)
 
@@ -18,17 +19,27 @@ def verify_bvn():
 
     The 'provider' field allows merchants to specify alternative providers
     for regions where the default CBN endpoint isn't applicable.
-    SSRF variant: an attacker controls the URL the server fetches.
+
+    Fix for V-APP-04: a client-supplied provider override is now validated
+    against private/loopback/link-local/reserved destinations before being
+    fetched. The operator-configured default (BVN_LOOKUP_URL) is trusted
+    config, not user input, so it is not subject to the same check.
     """
     data = request.get_json() or {}
     bvn = data.get("bvn")
-    provider_url = data.get("provider", BVN_LOOKUP_URL)
+    provider_url = data.get("provider")
 
     if not bvn or len(bvn) != 11:
         return jsonify({"error": "valid 11-digit BVN required"}), 400
 
+    if provider_url:
+        if not is_safe_external_url(provider_url):
+            return jsonify({"error": "provider must be a public http(s) URL"}), 400
+    else:
+        provider_url = BVN_LOOKUP_URL
+
     try:
-        resp = requests.post(provider_url, json={"bvn": bvn}, timeout=10)
+        resp = requests.post(provider_url, json={"bvn": bvn}, timeout=10, allow_redirects=False)
         return jsonify({"status": "ok", "provider_response": resp.text[:2000]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

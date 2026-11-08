@@ -1,12 +1,16 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: sentinelpay-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel123
+      # Fix for V-CLD-04: no hardcoded password. Set POSTGRES_PASSWORD (and
+      # the matching DATABASE_URL below) in a git-ignored .env — see
+      # .env.example.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: sentinelpay
     ports:
       - "5432:5432"
@@ -17,16 +21,24 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sentinelpay-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "6379:6379"
 
   payments-api:
     build: ./services/payments-api
     container_name: sentinelpay-payments
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "8001:8001"
     environment:
-      DATABASE_URL: postgresql://sentinel:sentinel123@postgres:5432/sentinelpay
+      DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinelpay
       REDIS_URL: redis://redis:6379/0
       # V-APP-02 fix: RS256 keypair, not a shared HS256 secret. payments-api
       # gets both halves because it's the only service that issues tokens.
@@ -34,8 +46,11 @@ services:
       # git-ignored .env; docker compose substitutes these automatically.
       JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64}
       JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64}
-      AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
-      AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      # Fix for V-CLD-04: no hardcoded AWS credentials. Set in a git-ignored
+      # .env — see .env.example. (moto mocks S3 in tests, so these are
+      # never used for a real AWS call in this environment.)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: af-south-1
       KYC_BUCKET: sentinelpay-kyc-documents
       WEBHOOK_TIMEOUT: "10"
@@ -47,16 +62,21 @@ services:
   kyc-api:
     build: ./services/kyc-api
     container_name: sentinelpay-kyc
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "8002:8002"
     environment:
-      DATABASE_URL: postgresql://sentinel:sentinel123@postgres:5432/sentinelpay
+      DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinelpay
       REDIS_URL: redis://redis:6379/1
       # V-APP-02 fix: kyc-api gets only the public key — it verifies tokens
       # payments-api issued, but holds nothing capable of signing one.
       JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64}
-      AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
-      AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: af-south-1
       KYC_BUCKET: sentinelpay-kyc-documents
       BVN_LOOKUP_URL: https://api.mock-cbn.local/bvn

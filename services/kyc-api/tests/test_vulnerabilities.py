@@ -24,7 +24,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-from moto import mock_s3
+from moto import mock_aws
 
 from app.main import create_app
 from app.auth import ISSUER, AUDIENCE
@@ -44,8 +44,11 @@ def client():
 @pytest.fixture
 def s3_bucket():
     """A moto-mocked S3 with the KYC bucket pre-created, standing in for the
-    real bucket until Week 2's Terraform provisions one."""
-    with mock_s3():
+    real bucket until Week 2's Terraform provisions one.
+
+    Fix for DEPS: moto 5.x replaced the per-service mock_s3() decorator with
+    a single mock_aws() covering every AWS service it mocks."""
+    with mock_aws():
         import boto3
 
         s3 = boto3.client(
@@ -153,28 +156,41 @@ def test_v_app_01_fix_injection_payload_no_longer_leaks_rows(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-04 (variant) — SSRF via client-supplied BVN provider URL
+# V-APP-04 (variant) — FIXED: the provider URL is now validated against
+# private/loopback/link-local/reserved destinations before being fetched.
+# See app/routes/verify.py and app/ssrf_guard.py.
 # --------------------------------------------------------------------------
-def test_v_app_04_ssrf_via_bvn_provider(client):
-    """The 'provider' field lets the caller redirect the server-side POST
-    anywhere, including services never meant to be reachable from outside
-    their own trust boundary. Demonstrated here against payments-api's
-    internal health endpoint, which a KYC caller has no legitimate reason
-    to reach."""
-    # verify_bvn always POSTs to `provider`, so the target has to accept POST.
-    # payments-api's own OTP endpoint does and needs no auth — a KYC caller
-    # has no legitimate reason to be able to reach it at all.
+def test_v_app_04_fix_internal_provider_url_is_blocked(client):
+    """The same internal payments-api target that used to be reachable via
+    the 'provider' override must now be rejected with 400, not fetched."""
     resp = client.post(
         "/v1/verify/bvn",
         json={"bvn": "12345678901", "provider": "http://payments-api:8001/v1/auth/otp"},
         headers=auth_header(mint_token()),
     )
-    assert resp.status_code == 200, resp.get_json()
-    body = resp.get_json()
-    assert '"status": "sent"' in body["provider_response"], (
-        "expected the server to have fetched an arbitrary internal URL and "
-        "returned its response body, proving no destination allow-list exists"
-    )
+    assert resp.status_code == 400
+
+
+def test_v_app_04_fix_guard_rejects_private_and_internal_ranges():
+    """Unit coverage of the guard itself, independent of DNS/network
+    availability in CI: loopback, link-local (incl. cloud metadata),
+    RFC1918 private ranges, and non-http(s) schemes must all be rejected."""
+    from app.ssrf_guard import is_safe_external_url
+
+    assert is_safe_external_url("http://127.0.0.1/") is False
+    assert is_safe_external_url("http://169.254.169.254/latest/meta-data/") is False
+    assert is_safe_external_url("http://10.0.0.5/") is False
+    assert is_safe_external_url("http://192.168.1.1/") is False
+    assert is_safe_external_url("ftp://8.8.8.8/") is False
+    assert is_safe_external_url("not-a-url") is False
+
+
+def test_v_app_04_fix_guard_accepts_public_address():
+    """A genuinely public IP literal must still be allowed — confirms the
+    fix didn't just block everything."""
+    from app.ssrf_guard import is_safe_external_url
+
+    assert is_safe_external_url("https://8.8.8.8/bvn") is True
 
 
 # --------------------------------------------------------------------------
@@ -219,9 +235,12 @@ def test_v_app_03_fix_owner_can_still_read_own_document(client, s3_bucket):
     assert fetch.data == b"my own passport bytes"
 
 
-def test_kyc_upload_sets_public_read_acl(client, s3_bucket):
-    """Every uploaded KYC document — passports, utility bills — is given a
-    public-read ACL, independent of the IDOR above."""
+# --------------------------------------------------------------------------
+# KYC-UPLOAD — FIXED: no public-read ACL, server-side encryption set
+# explicitly, filenames sanitised and uniquified, extension/size validated.
+# See app/routes/documents.py.
+# --------------------------------------------------------------------------
+def test_kyc_upload_fix_no_longer_sets_public_read_acl(client, s3_bucket):
     upload = client.post(
         "/v1/documents/upload",
         data={"file": (io.BytesIO(b"some id document"), "id.jpg")},
@@ -236,23 +255,46 @@ def test_kyc_upload_sets_public_read_acl(client, s3_bucket):
         g for g in acl["Grants"]
         if g["Grantee"].get("URI", "").endswith("/groups/global/AllUsers")
     ]
-    assert all_users_grant, "expected the AllUsers group to have been granted access"
-    assert all_users_grant[0]["Permission"] == "READ"
+    assert not all_users_grant, "expected no AllUsers grant on a newly uploaded document"
 
 
-def test_kyc_upload_filename_has_no_sanitisation_or_collision_protection(client, s3_bucket):
-    """The client-supplied filename is used verbatim in the S3 key with no
-    sanitisation and no collision check.
+def test_kyc_upload_fix_sets_server_side_encryption(client, s3_bucket):
+    upload = client.post(
+        "/v1/documents/upload",
+        data={"file": (io.BytesIO(b"some id document"), "id.jpg")},
+        content_type="multipart/form-data",
+        headers=auth_header(mint_token(user_id=303)),
+    )
+    key = upload.get_json()["key"]
 
-    Note on scope: S3 keys are flat strings, not filesystem paths, so a
-    literal '../' in the filename does NOT let an upload escape another
-    user's users/<id>/ prefix the way it would against a real filesystem —
-    an earlier draft of this test incorrectly assumed otherwise. The real,
-    demonstrable impact of the missing sanitisation is (a) no restriction on
-    '/' in the filename, so a single upload can create arbitrarily deep
-    nested keys under the caller's own prefix, and (b) no uniqueness check,
-    so a second upload with the same filename silently overwrites the first
-    with no versioning or warning."""
+    head = s3_bucket.head_object(Bucket=KYC_BUCKET, Key=key)
+    assert head.get("ServerSideEncryption") == "AES256"
+
+
+def test_kyc_upload_fix_rejects_disallowed_extension(client, s3_bucket):
+    upload = client.post(
+        "/v1/documents/upload",
+        data={"file": (io.BytesIO(b"<script>alert(1)</script>"), "exploit.html")},
+        content_type="multipart/form-data",
+        headers=auth_header(mint_token(user_id=606)),
+    )
+    assert upload.status_code == 400
+
+
+def test_kyc_upload_fix_rejects_oversized_file(client, s3_bucket):
+    oversized = b"0" * (10 * 1024 * 1024 + 1)
+    upload = client.post(
+        "/v1/documents/upload",
+        data={"file": (io.BytesIO(oversized), "passport.jpg")},
+        content_type="multipart/form-data",
+        headers=auth_header(mint_token(user_id=707)),
+    )
+    assert upload.status_code == 400
+
+
+def test_kyc_upload_fix_repeated_same_filename_no_longer_collides(client, s3_bucket):
+    """Two uploads with the identical filename must now get distinct keys —
+    no silent same-key overwrite."""
     token = mint_token(user_id=505)
 
     first = client.post(
@@ -262,29 +304,34 @@ def test_kyc_upload_filename_has_no_sanitisation_or_collision_protection(client,
         headers=auth_header(token),
     )
     assert first.status_code == 201
-    key = first.get_json()["key"]
+    first_key = first.get_json()["key"]
 
     second = client.post(
         "/v1/documents/upload",
-        data={"file": (io.BytesIO(b"silently overwritten, no versioning"), "passport.jpg")},
+        data={"file": (io.BytesIO(b"second, unrelated upload"), "passport.jpg")},
         content_type="multipart/form-data",
         headers=auth_header(token),
     )
     assert second.status_code == 201
-    assert second.get_json()["key"] == key, "same filename collided onto the same key with no warning"
+    second_key = second.get_json()["key"]
 
-    stored = s3_bucket.get_object(Bucket=KYC_BUCKET, Key=key)
-    assert stored["Body"].read() == b"silently overwritten, no versioning"
+    assert first_key != second_key
+    assert s3_bucket.get_object(Bucket=KYC_BUCKET, Key=first_key)["Body"].read() == b"first version of the document"
+    assert s3_bucket.get_object(Bucket=KYC_BUCKET, Key=second_key)["Body"].read() == b"second, unrelated upload"
 
-    traversal_filename = "../../etc/weird-but-not-cross-tenant.jpg"
-    nested = client.post(
+
+def test_kyc_upload_fix_path_traversal_filename_is_sanitised(client, s3_bucket):
+    """A filename containing '../' must no longer be passed through
+    verbatim into the S3 key."""
+    token = mint_token(user_id=505)
+
+    resp = client.post(
         "/v1/documents/upload",
-        data={"file": (io.BytesIO(b"nested key from unsanitised filename"), traversal_filename)},
+        data={"file": (io.BytesIO(b"doc"), "../../etc/weird.jpg")},
         content_type="multipart/form-data",
         headers=auth_header(token),
     )
-    assert nested.status_code == 201
-    nested_key = nested.get_json()["key"]
-    assert nested_key == f"users/505/{traversal_filename}", (
-        "filename passed through unsanitised into a literal (if odd-looking) S3 key"
-    )
+    assert resp.status_code == 201, resp.get_json()
+    key = resp.get_json()["key"]
+    assert ".." not in key
+    assert key.startswith("users/505/")

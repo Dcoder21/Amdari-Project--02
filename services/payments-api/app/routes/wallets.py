@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
 from app.auth import require_auth
+from app.audit import log_event
 
 wallets_bp = Blueprint("wallets", __name__)
 
@@ -48,6 +49,10 @@ def credit_wallet(account_id):
         )
         conn.commit()
 
+        log_event(
+            request.current_user_id, "wallet.credit", "account", account_id,
+            {"amount": str(amount), "new_balance": str(new_balance), "reference": reference, "description": description},
+        )
         return jsonify({"reference": reference, "new_balance": str(new_balance)})
     finally:
         cur.close()
@@ -66,9 +71,9 @@ def debit_wallet(account_id):
     could both observe the same pre-balance and each succeed, debiting the
     account below zero or beyond available funds.
 
-    V-APP-11: No audit log. Money movement is the most sensitive operation
-    in the platform, and there is no structured log of who debited what,
-    when, from where, and against which idempotency key.
+    Fix for V-APP-11: a structured audit_log row now records who debited
+    what, when, and against which reference, instead of leaving no record
+    of money movement at all.
 
     Fix for V-APP-03: ownership (or admin role) is now required — previously
     any authenticated caller could debit an arbitrary account_id.
@@ -107,6 +112,11 @@ def debit_wallet(account_id):
         )
         conn.commit()
 
+        log_event(
+            request.current_user_id, "wallet.debit", "account", account_id,
+            {"amount": str(amount), "new_balance": str(new_balance), "reference": reference,
+             "counterparty": counterparty, "description": description},
+        )
         return jsonify({"reference": reference, "new_balance": str(new_balance)})
     finally:
         cur.close()

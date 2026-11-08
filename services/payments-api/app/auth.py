@@ -16,6 +16,7 @@ rotation (OBJ-03).
 """
 import base64
 import hashlib
+import hmac
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from functools import wraps
 from flask import request, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 
 ISSUER = "sentinelpay-payments-api"
 AUDIENCE = "sentinelpay-services"
@@ -46,15 +48,30 @@ _PUBLIC_KEY = _load_key("JWT_PUBLIC_KEY_B64")
 def hash_password(password: str) -> str:
     """Hash a password for storage.
 
-    V-APP-06: Uses MD5 with no salt. Trivially reversible for common passwords
-    via rainbow tables, and MD5 is cryptographically broken regardless.
-    (Tracked separately — fix/v-app-06-password-hash.)
+    Fix for V-APP-06: salted PBKDF2-SHA256 (werkzeug's generate_password_hash
+    default) instead of unsalted MD5. Every new hash produced by this
+    function is in the new format.
     """
-    return hashlib.md5(password.encode()).hexdigest()
+    return generate_password_hash(password)
+
+
+def _is_legacy_md5_hash(stored_hash: str) -> bool:
+    """Seed data and any account created before this fix has a bare 32-char
+    hex MD5 digest; werkzeug's hashes always contain a ':'-delimited method
+    prefix, so this distinguishes the two formats without guessing."""
+    return len(stored_hash) == 32 and all(c in "0123456789abcdef" for c in stored_hash.lower())
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    return hash_password(password) == stored_hash
+    if _is_legacy_md5_hash(stored_hash):
+        return hmac.compare_digest(hashlib.md5(password.encode()).hexdigest(), stored_hash)
+    return check_password_hash(stored_hash, password)
+
+
+def needs_rehash(stored_hash: str) -> bool:
+    """True for any password still stored in the legacy MD5 format, so the
+    login route can transparently upgrade it on next successful login."""
+    return _is_legacy_md5_hash(stored_hash)
 
 
 def issue_token(user_id: int, role: str) -> str:
