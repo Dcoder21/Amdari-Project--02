@@ -13,7 +13,10 @@
 #     job. A new verify-signature job (and the deploy job) verify the
 #     signature and fail closed via scripts/verify_image_signature.sh
 #     before anything downstream trusts the image.
-#   V-PIP-02 — no SBOM is generated for any build.
+#   V-PIP-02 (fixed) — build-and-push now generates a CycloneDX SBOM per
+#     image with Syft, attaches it to the image digest, signs the
+#     attachment with cosign, and uploads it as a workflow artifact — not
+#     just produced and discarded.
 #   V-PIP-03 — the deploy job authenticates with a long-lived AWS access key
 #              pair (GitHub secrets, not OIDC) belonging to an IAM user that
 #              — per the case study's cloud-layer findings — has
@@ -117,6 +120,25 @@ jobs:
 
       - name: Sign image (keyless)
         run: cosign sign --yes ${{ steps.push.outputs.digest }}
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (CycloneDX)
+        # Fix for V-PIP-02: a CycloneDX SBOM per build, attached to the
+        # image digest and signed — not just produced and discarded.
+        run: syft ${{ steps.push.outputs.digest }} -o cyclonedx-json=sbom-${{ matrix.service }}.cdx.json
+
+      - name: Attach and sign SBOM
+        run: |
+          cosign attach sbom --sbom sbom-${{ matrix.service }}.cdx.json --type cyclonedx ${{ steps.push.outputs.digest }}
+          cosign sign --yes --attachment sbom ${{ steps.push.outputs.digest }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.cdx.json
 
   verify-signature:
     name: verify-signature (${{ matrix.service }})
