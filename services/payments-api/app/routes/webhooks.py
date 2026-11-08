@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
 from app.auth import require_auth
+from app.ssrf_guard import is_safe_external_url
 
 webhooks_bp = Blueprint("webhooks", __name__)
 
@@ -14,13 +15,20 @@ WEBHOOK_TIMEOUT = int(os.environ.get("WEBHOOK_TIMEOUT", "10"))
 @webhooks_bp.route("/", methods=["POST"])
 @require_auth
 def register_webhook():
-    """Register a callback URL for transaction events."""
+    """Register a callback URL for transaction events.
+
+    Fix for V-APP-04: the callback URL is now validated at registration
+    time too, so an internal/private destination can never be stored for
+    later delivery, not just blocked at the point of an immediate fetch.
+    """
     data = request.get_json() or {}
     callback_url = data.get("callback_url")
     event_type = data.get("event_type", "transaction.completed")
 
     if not callback_url:
         return jsonify({"error": "callback_url required"}), 400
+    if not is_safe_external_url(callback_url):
+        return jsonify({"error": "callback_url must be a public http(s) URL"}), 400
 
     conn = get_connection()
     cur = conn.cursor()
@@ -42,21 +50,24 @@ def register_webhook():
 def test_webhook():
     """Test-fire a webhook by fetching the supplied URL with a sample payload.
 
-    V-APP-04: Server-Side Request Forgery. The URL is fetched with no validation
-    of scheme, host, or destination. Try /v1/webhooks/test with
+    Fix for V-APP-04: the URL's resolved address is now checked against
+    private/loopback/link-local/reserved ranges before it is ever fetched —
+    this is what would have blocked
     {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
-    once this is deployed to AWS, and the EC2/Fargate instance metadata
-    credentials come back in the response body.
+    from reaching the EC2/Fargate instance metadata endpoint.
     """
     data = request.get_json() or {}
     url = data.get("url")
 
     if not url:
         return jsonify({"error": "url required"}), 400
+    if not is_safe_external_url(url):
+        return jsonify({"error": "url must be a public http(s) URL"}), 400
 
     try:
-        # No allowlist, no scheme check, no IP filter, no redirect cap.
-        resp = requests.get(url, timeout=WEBHOOK_TIMEOUT)
+        # allow_redirects=False: a redirect to an internal address would
+        # otherwise bypass the pre-fetch check above.
+        resp = requests.get(url, timeout=WEBHOOK_TIMEOUT, allow_redirects=False)
         return jsonify({
             "status_code": resp.status_code,
             "headers": dict(resp.headers),
