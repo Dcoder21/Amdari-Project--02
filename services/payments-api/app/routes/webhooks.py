@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 from app.db import get_connection
 from app.auth import require_auth
 from app.ssrf_guard import is_safe_external_url
+from app.audit import log_event
 
 webhooks_bp = Blueprint("webhooks", __name__)
 
@@ -39,6 +40,11 @@ def register_webhook():
         )
         webhook_id = cur.fetchone()["id"]
         conn.commit()
+
+        log_event(
+            request.current_user_id, "webhook.register", "webhook", webhook_id,
+            {"callback_url": callback_url, "event_type": event_type},
+        )
         return jsonify({"id": webhook_id, "callback_url": callback_url}), 201
     finally:
         cur.close()

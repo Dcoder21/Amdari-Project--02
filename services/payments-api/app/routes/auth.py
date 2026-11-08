@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify
 from app.db import get_connection
 from app.auth import hash_password, verify_password, needs_rehash, issue_token
 from app.rate_limit import too_many_requests, is_blocked, record_failure, reset, rate_limited_response
+from app.audit import log_event
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -48,6 +49,8 @@ def register():
         )
         user_id = cur.fetchone()["id"]
         conn.commit()
+
+        log_event(user_id, "user.register", "user", user_id, {"email": email, "role": role})
         return jsonify({"id": user_id, "email": email, "role": role}), 201
     finally:
         cur.close()

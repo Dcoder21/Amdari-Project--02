@@ -680,16 +680,65 @@ def test_v_app_10_fix_legitimate_json_session_still_restores(client):
 
 
 # --------------------------------------------------------------------------
-# V-APP-11 — missing audit logging
+# V-APP-11 — FIXED: wallet credit/debit, profile updates, registration, and
+# webhook registration now write a structured audit_log row. See
+# app/audit.py and the routes that call log_event().
 # --------------------------------------------------------------------------
-@pytest.mark.skip(
-    reason=(
-        "V-APP-11: there is no structured audit logger to assert against yet. "
-        "Validated manually today by confirming `docker compose logs payments-api` "
-        "contains no structured entry for a debit. This test will be un-skipped and "
-        "rewritten against pytest's caplog once the fix PR introduces the audit "
-        "logger, asserting a log record with actor/action/object/outcome fields."
+def test_v_app_11_fix_wallet_debit_writes_audit_log_entry(client):
+    owner_token = login_seeded_owner(client)
+    client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/credit",
+        json={"amount": "50.00"},
+        headers=auth_header(owner_token),
     )
-)
-def test_v_app_11_wallet_debit_emits_no_audit_log():
-    pass
+    debit = client.post(
+        f"/v1/wallets/{SEEDED_ACCOUNT_ID}/debit",
+        json={"amount": "1.00", "counterparty": "audit-test", "description": "audit log coverage"},
+        headers=auth_header(owner_token),
+    )
+    reference = debit.get_json()["reference"]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT action, resource_type, resource_id, metadata FROM audit_log "
+            "WHERE action = 'wallet.debit' AND resource_id = %s ORDER BY id DESC LIMIT 1",
+            (str(SEEDED_ACCOUNT_ID),),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    assert row is not None, "expected a wallet.debit audit_log row for this account"
+    assert row["metadata"]["reference"] == reference
+
+
+def test_v_app_11_fix_profile_update_writes_audit_log_entry(client):
+    admin_token = login_seeded_owner(client)
+    client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "USD"},
+        headers=auth_header(admin_token),
+    )
+    client.put(
+        f"/v1/accounts/{SEEDED_ACCOUNT_ID}/profile",
+        json={"currency": "NGN"},
+        headers=auth_header(admin_token),
+    )
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT action FROM audit_log WHERE action = 'account.profile_update' "
+            "AND resource_id = %s",
+            (str(SEEDED_ACCOUNT_ID),),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    assert len(rows) >= 2, "expected an account.profile_update audit_log row per update"
