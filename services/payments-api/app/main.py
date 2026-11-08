@@ -44,17 +44,17 @@ def create_app():
 
     @app.errorhandler(Exception)
     def handle_exception(e):
-        # V-APP-09: Verbose error response leaks stack details
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "type": type(e).__name__,
-            "trace": traceback.format_exc()
-        }), 500
+        """Fix for V-APP-09: the stack trace is now logged server-side
+        instead of being returned in the response body. The client gets a
+        generic message and a request id it can quote to support, not the
+        implementation details that used to come back in 'trace'."""
+        app.logger.error("Unhandled exception: %s", e, exc_info=True)
+        return jsonify({"error": "internal server error"}), 500
 
     return app
 
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=8001, debug=True)
+    debug_mode = os.environ.get("ENVIRONMENT", "development") == "development"
+    app.run(host="0.0.0.0", port=8001, debug=debug_mode)
