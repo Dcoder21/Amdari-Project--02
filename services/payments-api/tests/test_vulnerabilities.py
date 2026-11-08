@@ -742,3 +742,29 @@ def test_v_app_11_fix_profile_update_writes_audit_log_entry(client):
         conn.close()
 
     assert len(rows) >= 2, "expected an account.profile_update audit_log row per update"
+
+
+# --------------------------------------------------------------------------
+# V-CLD-04 — FIXED: no hardcoded secrets (DB password, AWS keys, JWT
+# secret) in app code. See app/db.py, app/main.py, docker-compose.yml,
+# .env.example, and the removal of scripts/legacy_deploy.sh.
+# --------------------------------------------------------------------------
+def test_v_cld_04_fix_get_connection_has_no_hardcoded_fallback():
+    """get_connection() must require DATABASE_URL rather than falling back
+    to a hardcoded connection string (which embedded a password)."""
+    from app.db import get_connection
+
+    original = os.environ.pop("DATABASE_URL", None)
+    try:
+        with pytest.raises(KeyError):
+            get_connection()
+    finally:
+        if original is not None:
+            os.environ["DATABASE_URL"] = original
+
+
+def test_v_cld_04_fix_no_hardcoded_jwt_secret_in_main_config():
+    """The dead app.config['JWT_SECRET'] fallback (leftover from the
+    pre-V-APP-02 HS256 scheme) must be gone, not just unused."""
+    app = create_app()
+    assert "JWT_SECRET" not in app.config

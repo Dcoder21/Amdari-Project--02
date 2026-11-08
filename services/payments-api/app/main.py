@@ -29,7 +29,6 @@ class DecimalJSONEncoder(JSONEncoder):
 def create_app():
     app = Flask(__name__)
     app.json_encoder = DecimalJSONEncoder
-    app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
     app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
 
     # Fix for V-APP-11: ensure the audit_log table exists even against an
