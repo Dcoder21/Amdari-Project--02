@@ -17,13 +17,13 @@
 #     image with Syft, attaches it to the image digest, signs the
 #     attachment with cosign, and uploads it as a workflow artifact — not
 #     just produced and discarded.
-#   V-PIP-03 — the deploy job authenticates with a long-lived AWS access key
-#              pair (GitHub secrets, not OIDC) belonging to an IAM user that
-#              — per the case study's cloud-layer findings — has
-#              AdministratorAccess. That permission lives on the IAM side,
-#              not in this file; nothing here can "show" it beyond the fact
-#              that a static key pair is used at all instead of a scoped,
-#              short-lived federated credential.
+#   V-PIP-03 (fixed) — build-and-push and deploy now authenticate to AWS
+#     via GitHub's OIDC provider (role-to-assume, permissions: id-token:
+#     write) instead of a long-lived access key pair from secrets. The
+#     deploy role itself (least-privilege, not AdministratorAccess) is
+#     provisioned in Week 2's Terraform; AWS_DEPLOY_ROLE_ARN below is its
+#     ARN, not a secret — OIDC trust makes the ARN alone useless without a
+#     matching GitHub Actions run to federate from.
 #
 # docs/ARCHITECTURE_NOTES.md also states plainly: "The CI workflow ...
 # doesn't even fail on a failing test." That is reproduced below via
@@ -49,6 +49,9 @@ on:
 env:
   AWS_REGION: af-south-1
   ECR_REGISTRY: 123456789012.dkr.ecr.af-south-1.amazonaws.com
+  # V-PIP-03 fix: the deploy role itself is created and scoped in Week 2's
+  # Terraform; this is its ARN, not a secret.
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::123456789012:role/sentinelpay-github-actions-deploy
 
 jobs:
   test:
@@ -79,9 +82,10 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      # Fix for V-PIP-01: id-token:write is what lets this job request the
-      # OIDC identity token cosign uses for keyless signing — no signing
-      # key to generate, store, or leak.
+      # id-token:write serves two fixes: this job's OIDC federation into
+      # AWS below (V-PIP-03), and the OIDC identity token cosign uses for
+      # keyless signing later in this same job (V-PIP-01) — no signing key
+      # and no long-lived AWS key to generate, store, or leak.
       id-token: write
       contents: read
     strategy:
@@ -90,13 +94,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # V-PIP-03: long-lived static keys from an IAM user with
-          # AdministratorAccess, not a scoped OIDC-federated role.
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Fix for V-PIP-03: federates via GitHub's OIDC token into a
+          # short-lived, least-privilege role instead of a long-lived
+          # access key pair from an IAM user with AdministratorAccess.
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
@@ -166,17 +170,21 @@ jobs:
     needs: verify-signature
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    permissions:
+      # Fix for V-PIP-03: same OIDC federation as build-and-push, not a
+      # long-lived key pair.
+      id-token: write
+      contents: read
     strategy:
       matrix:
         service: [payments-api, kyc-api]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install cosign
