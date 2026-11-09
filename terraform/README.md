@@ -15,12 +15,12 @@ validated (`terraform validate`) and scanned (`trivy config`) offline.
 
 ## Applying
 
-1. Enable the region (`af-south-1` is opt-in) and configure credentials.
+1. Configure credentials (default region `eu-west-2`; opt-in regions such as `af-south-1` must be enabled on the account first).
 2. `terraform init && terraform plan`, review, `terraform apply`.
 3. Populate the JWT secrets out of band (never through Terraform state):
    `aws secretsmanager put-secret-value --secret-id sentinelpay-dev/jwt-public-key-b64 ...`
 4. Copy the `ecr_registry` and `github_deploy_role_arn` outputs into
-   `.github/workflows/ci.yml` (currently placeholder account `123456789012`).
+   `.github/workflows/ci.yml` (placeholders already replaced with account `723799951407` / `eu-west-2`).
 5. Move state to S3 (see the commented backend in `versions.tf`).
 
 ## Known gaps before this can serve traffic
@@ -37,3 +37,17 @@ validated (`terraform validate`) and scanned (`trivy config`) offline.
   disable-IAM-user / quarantine-task Lambda and the honeytoken key are not
   built yet (Week 3 purple-team scope).
 - **Image tags.** ECR tags are mutable until CI stops pushing `:latest`.
+
+## Tearing down
+
+Deletion protection is a variable, not an edit to the resources:
+
+```
+terraform apply -var deletion_protection=false     # lifts RDS + ALB protection, drops final snapshot, zero-day secret recovery
+terraform destroy -var deletion_protection=false
+```
+
+The CloudTrail bucket has Object Lock (Governance, 365 days), so `destroy`
+cannot empty it while the retention runs. Remove it from state
+(`terraform state rm aws_s3_bucket.cloudtrail ...`) or empty it with
+`s3:BypassGovernanceRetention` before destroying.

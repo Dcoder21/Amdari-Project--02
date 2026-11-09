@@ -94,8 +94,8 @@ resource "aws_db_instance" "this" {
 
   backup_retention_period             = 14
   copy_tags_to_snapshot               = true
-  deletion_protection                 = true
-  skip_final_snapshot                 = false
+  deletion_protection                 = var.deletion_protection
+  skip_final_snapshot                 = !var.deletion_protection
   final_snapshot_identifier           = "${local.name}-final"
   auto_minor_version_upgrade          = true
   iam_database_authentication_enabled = true
@@ -118,8 +118,9 @@ resource "random_password" "redis" {
 }
 
 resource "aws_secretsmanager_secret" "redis_auth" {
-  name       = "${local.name}/redis-auth-token"
-  kms_key_id = aws_kms_key.this["secrets"].arn
+  name                    = "${local.name}/redis-auth-token"
+  kms_key_id              = aws_kms_key.this["secrets"].arn
+  recovery_window_in_days = var.deletion_protection ? 30 : 0
 }
 
 resource "aws_secretsmanager_secret_version" "redis_auth" {

@@ -19,13 +19,15 @@ resource "aws_cloudwatch_log_group" "service" {
 # (scripts/generate_dev_jwt_keys.sh for dev), never through Terraform state.
 
 resource "aws_secretsmanager_secret" "jwt_public" {
-  name       = "${local.name}/jwt-public-key-b64"
-  kms_key_id = aws_kms_key.this["secrets"].arn
+  name                    = "${local.name}/jwt-public-key-b64"
+  kms_key_id              = aws_kms_key.this["secrets"].arn
+  recovery_window_in_days = var.deletion_protection ? 30 : 0
 }
 
 resource "aws_secretsmanager_secret" "jwt_private" {
-  name       = "${local.name}/jwt-private-key-b64"
-  kms_key_id = aws_kms_key.this["secrets"].arn
+  name                    = "${local.name}/jwt-private-key-b64"
+  kms_key_id              = aws_kms_key.this["secrets"].arn
+  recovery_window_in_days = var.deletion_protection ? 30 : 0
 }
 
 # --- Load balancer ------------------------------------------------------------------------
@@ -140,7 +142,7 @@ resource "aws_lb" "this" {
   subnets                    = aws_subnet.public[*].id
   security_groups            = [aws_security_group.alb.id]
   drop_invalid_header_fields = true
-  enable_deletion_protection = true
+  enable_deletion_protection = var.deletion_protection
 
   access_logs {
     bucket  = aws_s3_bucket.logs.id

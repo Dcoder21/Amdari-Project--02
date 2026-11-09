@@ -1,7 +1,7 @@
 variable "region" {
-  description = "AWS region. af-south-1 is opt-in: enable it on the account first."
+  description = "AWS region. Pick an enabled-by-default region; opt-in regions (e.g. af-south-1) must be enabled on the account first."
   type        = string
-  default     = "af-south-1"
+  default     = "eu-west-2"
 }
 
 variable "environment" {
@@ -62,4 +62,10 @@ variable "image_tag" {
   description = "Image tag deployed to ECS. CI pushes :latest today; pin to a digest once the Week 3 pipeline lands."
   type        = string
   default     = "latest"
+}
+
+variable "deletion_protection" {
+  description = "Protects RDS and the ALB from deletion, keeps a final RDS snapshot and a 30-day Secrets Manager recovery window. Set to false (and apply) BEFORE terraform destroy."
+  type        = bool
+  default     = true
 }

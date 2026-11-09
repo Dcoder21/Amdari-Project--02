@@ -19,7 +19,7 @@ terraform {
   # backend "s3" {
   #   bucket         = "sentinelpay-tfstate-<account-id>"
   #   key            = "sentinelpay/terraform.tfstate"
-  #   region         = "af-south-1"
+  #   region         = "eu-west-2"
   #   dynamodb_table = "sentinelpay-tfstate-lock"
   #   encrypt        = true
   # }
