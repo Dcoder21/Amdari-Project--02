@@ -9,10 +9,10 @@ variable "environment" {
   default = "dev"
 }
 
-variable "github_repo" {
-  description = "GitHub repository (owner/name) allowed to assume the deploy role via OIDC."
+variable "github_oidc_subject_prefix" {
+  description = "Prefix of the GitHub OIDC `sub` claim for this repo. Repos with immutable subject claims enabled use numeric IDs: `gh api repos/OWNER/REPO/actions/oidc/customization/sub` returns the exact sub_claim_prefix. Otherwise it is repo:OWNER/REPO."
   type        = string
-  default     = "sadorect/Amdari-Project--02"
+  default     = "repo:sadorect@24244892/Amdari-Project--02@1447932521"
 }
 
 variable "vpc_cidr" {

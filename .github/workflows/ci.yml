@@ -53,6 +53,8 @@ env:
   # V-PIP-03 fix: the deploy role itself is created and scoped in Week 2's
   # Terraform; this is its ARN, not a secret.
   AWS_DEPLOY_ROLE_ARN: arn:aws:iam::723799951407:role/sentinelpay-github-actions-deploy
+  # ECR push only; any branch of this repo. Deploy is main-only.
+  AWS_BUILD_ROLE_ARN: arn:aws:iam::723799951407:role/sentinelpay-github-actions-build
 
 jobs:
   test:
@@ -124,7 +126,7 @@ jobs:
           # Fix for V-PIP-03: federates via GitHub's OIDC token into a
           # short-lived, least-privilege role instead of a long-lived
           # access key pair from an IAM user with AdministratorAccess.
-          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_BUILD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
@@ -172,11 +174,24 @@ jobs:
     name: verify-signature (${{ matrix.service }})
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      # Private ECR: the verifier needs read access to fetch the signature.
+      id-token: write
+      contents: read
     strategy:
       matrix:
         service: [payments-api, kyc-api]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -210,6 +225,9 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
