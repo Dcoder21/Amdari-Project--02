@@ -69,3 +69,9 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+variable "db_backup_retention_days" {
+  description = "RDS automated backup retention. The AWS Free plan caps this at 1; use 14 on a paid plan."
+  type        = number
+  default     = 14
+}

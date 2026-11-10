@@ -92,7 +92,7 @@ resource "aws_db_instance" "this" {
   vpc_security_group_ids = [aws_security_group.db.id]
   parameter_group_name   = aws_db_parameter_group.this.name
 
-  backup_retention_period             = 14
+  backup_retention_period             = var.db_backup_retention_days
   copy_tags_to_snapshot               = true
   deletion_protection                 = var.deletion_protection
   skip_final_snapshot                 = !var.deletion_protection

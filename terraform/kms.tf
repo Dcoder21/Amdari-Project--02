@@ -26,7 +26,7 @@ data "aws_iam_policy_document" "kms" {
     for_each = each.key == "logs" ? [1] : []
     content {
       sid       = "AllowLogServices"
-      actions   = ["kms:GenerateDataKey*", "kms:Decrypt", "kms:DescribeKey"]
+      actions   = ["kms:Encrypt*", "kms:Decrypt*", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"]
       resources = ["*"]
       principals {
         type = "Service"

@@ -175,6 +175,8 @@ data "aws_iam_policy_document" "kyc" {
   }
 }
 
+data "aws_elb_service_account" "main" {}
+
 data "aws_iam_policy_document" "logs" {
   source_policy_documents = [data.aws_iam_policy_document.tls_only["logs"].json]
 
@@ -190,6 +192,18 @@ data "aws_iam_policy_document" "logs" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [local.account_id]
+    }
+  }
+
+  # ALB access logs. Regions opened before Aug 2022 (eu-west-2 included)
+  # write as a regional ELB account, not a service principal.
+  statement {
+    sid       = "AlbAccessLogs"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.logs.arn}/alb/AWSLogs/${local.account_id}/*"]
+    principals {
+      type        = "AWS"
+      identifiers = [data.aws_elb_service_account.main.arn]
     }
   }
 
