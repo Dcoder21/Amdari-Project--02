@@ -6,7 +6,7 @@ did what, when, or against which resource.
 Writes to a dedicated audit_log table rather than just stdout, so entries
 survive container restarts and can be queried; ensure_audit_table() is
 called once at app startup so this works against an already-initialised
-database volume, not just a fresh one (seed/init.sql also creates the
+database volume, not just a fresh one (seed/schema.sql also creates the
 table for clean installs).
 """
 import json

@@ -79,7 +79,7 @@ def login_seeded_owner(client):
     """Return a token that can act on SEEDED_ACCOUNT_ID as if it were the
     real owner (merchant1@example.com). The seeded merchant users' plaintext
     passwords aren't known, so this logs in as the seeded admin account
-    (admin@sentinelpay.io / password123, see seed/init.sql) instead — admin
+    (admin@sentinelpay.io / password123, see seed/seed_data.sql) instead — admin
     bypasses the ownership check by design (see app/routes/accounts.py).
     Now that V-APP-07 is fixed, self-assigned role='admin' at registration
     no longer works, so this is a real admin login, not a workaround."""
@@ -449,7 +449,7 @@ def test_v_app_06_fix_verify_password_still_accepts_legacy_md5_hash():
 
 def test_v_app_06_fix_login_transparently_upgrades_legacy_hash(client):
     """A real login against the seeded admin account (still MD5 in
-    seed/init.sql) must succeed, and silently rewrite the stored hash to the
+    seed/seed_data.sql) must succeed, and silently rewrite the stored hash to the
     new format so a direct DB read no longer shows a crackable MD5 digest."""
     login = client.post(
         "/v1/auth/login",

@@ -16,7 +16,9 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./seed/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Loaded in name order: schema first, then demo data (local only).
+      - ./seed/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./seed/seed_data.sql:/docker-entrypoint-initdb.d/02-seed-data.sql:ro
 
   redis:
     image: redis:7-alpine
