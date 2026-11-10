@@ -96,8 +96,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r services/${{ matrix.service }}/requirements-dev.txt
 
-      - name: Load seed schema
-        run: PGPASSWORD=ci-test-only psql -h localhost -U sentinel -d sentinelpay -v ON_ERROR_STOP=1 -f seed/init.sql
+      - name: Load schema and demo data
+        run: |
+          export PGPASSWORD=ci-test-only
+          for f in seed/schema.sql seed/seed_data.sql; do
+            psql -h localhost -U sentinel -d sentinelpay -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: Run tests
         working-directory: services/${{ matrix.service }}
