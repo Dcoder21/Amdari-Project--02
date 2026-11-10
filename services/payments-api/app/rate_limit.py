@@ -2,10 +2,11 @@
 (already a dependency, previously unused), applied to login, register and
 OTP request — the three endpoints the finding named as unlimited.
 """
-import os
 
 import redis
 from flask import jsonify
+
+from app.config import redis_url
 
 _redis_client = None
 
@@ -13,7 +14,7 @@ _redis_client = None
 def _get_redis():
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.from_url(os.environ.get("REDIS_URL", "redis://redis:6379/0"))
+        _redis_client = redis.from_url(redis_url())
     return _redis_client
 
 
