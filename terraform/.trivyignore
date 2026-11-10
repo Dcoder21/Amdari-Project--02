@@ -1,0 +1,23 @@
+# Each entry needs a reason. Re-verify the "false positive" ones against a
+# real `terraform plan` JSON (trivy config on the plan) once the account exists.
+
+# ECR mutable tags: ci.yml still pushes :latest. Flip to IMMUTABLE with the
+# Week 3 pipeline (commit-SHA / digest tags).
+AVD-AWS-0031
+
+# Plain HTTP listener: only reached when var.certificate_arn is empty
+# (throwaway dev stack). With a certificate the listener redirects to HTTPS.
+AVD-AWS-0054
+
+# S3 public access block: false positive. aws_s3_bucket_public_access_block.this
+# is for_each'd over all three buckets with all four flags true; the scanner
+# cannot resolve for_each to the bucket resources.
+AVD-AWS-0086
+AVD-AWS-0087
+AVD-AWS-0091
+AVD-AWS-0093
+
+# CMK encryption: kyc and cloudtrail use CMKs via for_each (same scanner
+# limitation). The logs bucket is SSE-S3 on purpose: S3 server access logs
+# and ALB access logs cannot be delivered to a KMS-encrypted bucket.
+AVD-AWS-0132

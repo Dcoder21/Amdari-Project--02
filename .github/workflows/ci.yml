@@ -25,9 +25,10 @@
 #     ARN, not a secret — OIDC trust makes the ARN alone useless without a
 #     matching GitHub Actions run to federate from.
 #
-# docs/ARCHITECTURE_NOTES.md also states plainly: "The CI workflow ...
-# doesn't even fail on a failing test." That is reproduced below via
-# `continue-on-error: true` on the test step.
+# docs/ARCHITECTURE_NOTES.md states plainly: "The CI workflow ...
+# doesn't even fail on a failing test." That is fixed: the test step no
+# longer sets `continue-on-error`, so a failing test fails the job and
+# blocks build-and-push (which `needs: test`).
 #
 # V-PIP-04 (no branch protection on main) is a repository setting, not
 # something expressible in this file — tracked separately against the
@@ -47,11 +48,11 @@ on:
     branches: ["main"]
 
 env:
-  AWS_REGION: af-south-1
-  ECR_REGISTRY: 123456789012.dkr.ecr.af-south-1.amazonaws.com
+  AWS_REGION: eu-west-2
+  ECR_REGISTRY: 723799951407.dkr.ecr.eu-west-2.amazonaws.com
   # V-PIP-03 fix: the deploy role itself is created and scoped in Week 2's
   # Terraform; this is its ARN, not a secret.
-  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::123456789012:role/sentinelpay-github-actions-deploy
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::723799951407:role/sentinelpay-github-actions-deploy
 
 jobs:
   test:
@@ -60,6 +61,29 @@ jobs:
     strategy:
       matrix:
         service: [payments-api, kyc-api]
+    # The suites exercise real SQL (SQLi, race and ownership tests), so they
+    # need the same Postgres and Redis the app runs against. Credentials
+    # are throwaway values for an ephemeral service container, not secrets.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: sentinelpay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinel" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://sentinel:ci-test-only@localhost:5432/sentinelpay
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
 
@@ -68,13 +92,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r services/${{ matrix.service }}/requirements.txt
+        run: pip install -r services/${{ matrix.service }}/requirements-dev.txt
+
+      - name: Load seed schema
+        run: PGPASSWORD=ci-test-only psql -h localhost -U sentinel -d sentinelpay -v ON_ERROR_STOP=1 -f seed/init.sql
 
       - name: Run tests
         working-directory: services/${{ matrix.service }}
-        # V-PIP context: a failing test does not fail the job or block the
-        # build below — the pipeline reports green regardless.
-        continue-on-error: true
         run: pytest tests/ -v
 
   build-and-push:
