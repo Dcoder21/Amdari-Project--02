@@ -87,6 +87,11 @@ resource "aws_guardduty_detector_feature" "this" {
       status = "ENABLED"
     }
   }
+
+  # GuardDuty switches on related sub-features itself (RDS_DATA_RISK, EKS /
+  # EC2 agent management); without this the provider replaces the feature
+  # on every plan.
+  lifecycle { ignore_changes = [additional_configuration] }
 }
 
 # --- Security Hub -----------------------------------------------------------
@@ -101,7 +106,7 @@ resource "aws_securityhub_standards_subscription" "fsbp" {
 }
 
 resource "aws_securityhub_standards_subscription" "cis" {
-  standards_arn = "arn:${local.partition}:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.4.0"
+  standards_arn = "arn:${local.partition}:securityhub:${var.region}::standards/cis-aws-foundations-benchmark/v/1.4.0"
   depends_on    = [aws_securityhub_account.this]
 }
 
