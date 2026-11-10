@@ -92,7 +92,7 @@ masking failures since the start of the engagement (§4.10).
 | V-CLD-04 | Hardcoded AWS keys | No static keys anywhere; Secrets Manager (KMS), task roles, OIDC | Live, verified |
 | V-CLD-05 | Overbroad IAM role | One task role per service; only `kyc-api` can reach S3, only the KYC bucket; scoped deploy and build roles | Live, verified |
 | V-CLD-06 | CloudTrail integrity | Multi-region trail, log-file validation, KMS, S3 object events on the KYC bucket, Object Lock (Governance, 365 days) | Live, verified |
-| V-CLD-07 | GuardDuty disabled | Detector on with S3, malware, RDS login, Lambda and runtime features; Security Hub FSBP and CIS; AWS Config now recording | Live, verified; Security Hub scoring not yet re-checked |
+| V-CLD-07 | GuardDuty disabled | Detector on with S3, malware, RDS login, Lambda and runtime features; Security Hub FSBP and CIS; AWS Config now recording | Live; Security Hub still `INCOMPLETE` minutes after Config started, re-check pending |
 | V-CLD-08 | No flow logs | VPC flow logs to S3 and to an encrypted CloudWatch log group | Live, verified |
 | V-PIP-03 | Pipeline has admin | GitHub OIDC build role (ECR push, any branch) and deploy role (ECS redeploy, `main` only) | Live; pipeline green end to end |
 | (target state) | Config, per-service DB roles, honeytoken, automated response | See §4.11 to §4.14 | Config, honeytoken and Lambda **live**; DB roles plumbed, **cutover pending** (PR #45 unmerged) |
@@ -158,9 +158,12 @@ GuardDuty is enabled with S3 data events, EBS malware protection, RDS login
 events, Lambda network logs and runtime monitoring. Security Hub is on with the
 AWS Foundational Security Best Practices and CIS 1.4.0 standards. High-severity
 GuardDuty findings (severity ≥ 7) are routed to an encrypted SNS topic.
-**Note:** both standards showed `INCOMPLETE` while AWS Config was not
-recording. Config is now recording (§4.11); I have not yet re-queried Security
-Hub to confirm the standards have moved to scored.
+**Open:** both standards showed `INCOMPLETE` while AWS Config was not
+recording. Config is now recording (§4.11), but a query made minutes after the
+recorder started still returned `INCOMPLETE` with reason
+`NO_AVAILABLE_CONFIGURATION_RECORDER`. Security Hub refreshes this on its own
+schedule, so this is unconfirmed either way; re-check it, and if it persists
+treat it as a defect in the Config setup.
 
 ### 4.7 V-CLD-08 — VPC flow logs
 
