@@ -48,11 +48,11 @@ on:
     branches: ["main"]
 
 env:
-  AWS_REGION: af-south-1
-  ECR_REGISTRY: 123456789012.dkr.ecr.af-south-1.amazonaws.com
+  AWS_REGION: eu-west-2
+  ECR_REGISTRY: 723799951407.dkr.ecr.eu-west-2.amazonaws.com
   # V-PIP-03 fix: the deploy role itself is created and scoped in Week 2's
   # Terraform; this is its ARN, not a secret.
-  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::123456789012:role/sentinelpay-github-actions-deploy
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::723799951407:role/sentinelpay-github-actions-deploy
 
 jobs:
   test:
